@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple, Union
 
 from phasorpy.io import write_ometiff_phasor
+import numpy as np
 
 if TYPE_CHECKING:
     DataType = Union[Any, Sequence[Any]]
@@ -84,11 +85,9 @@ def write_ome_tiff(path: str, data: Any) -> List[str]:
     -------
     [path] : A list containing the string path to the saved file.
     """
-    print(data)
-    # phasor_data = data.metadata['phasor_features_labels_layer']
-    # mean = data[0]
-    # G = phasor_data['G']
-    # S = phasor_data['S']
-    # write_ometiff_phasor(path, mean, G, S)
-    # return path to any file(s) that were successfully written
+    phasor_data = data[0][1]['metadata']['phasor_features_labels_layer']
+    mean = data[0][0]
+    G = np.reshape(phasor_data.features['G'], mean.shape)
+    S = np.reshape(phasor_data.features['S'], mean.shape)
+    write_ometiff_phasor(path, mean, G, S)
     return [path]

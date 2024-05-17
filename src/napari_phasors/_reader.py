@@ -10,49 +10,39 @@ import numpy as np
 import phasorpy.io as io
 from phasorpy.phasor import phasor_from_signal
 import pandas as pd
-from napari.layers import Labels, Image
+from napari.layers import Labels
+
+
+extension_mapping = {
+    'raw':{
+        ".ptu": lambda path: io.read_ptu(path, frame=-1, keepdims=False),
+        ".fbd": lambda path: io.read_fbd(path, frame=-1, keepdims=False),
+        ".flif": lambda path: io.read_flif(path),
+        ".sdt": lambda path: io.read_sdt(path),
+        ".bh": lambda path: io.read_bh(path),
+        ".bhz": lambda path: io.read_bhz(path),
+        # ".ifli": lambda path: io.read_ifli(),
+        ".lsm": lambda path: io.read_lsm(path),
+    },
+    'processed':{
+        ".tif": lambda path: io.read_ometiff_phasor(path),
+        # ".b64": lambda path: io.read_b64(path),
+        # ".r64": lambda path: io.read_r64(path),
+        # ".ref": lambda path: io.read_ref(path)
+    },
+}
+"""This dictionary contains the mapping for reader functions from `phasorpy` 
+supported formats.
+"""
 
 def napari_get_reader(path):
-    """A basic implementation of a Reader contribution.
-
-    """
-    supported_raw_formats = [
-        ".ptu",
-        ".fbd",
-        ".flif",
-        ".sdt",
-        ".bh",
-        ".bhz",
-        # ".ifli",
-        ".lsm"
-    ]
-    supported_processed_formats = [
-        ".tif",
-        # ".b64",
-        # ".r64",
-        # ".ref"
-    ]
-    _, file_extension = os.path.splitext(path)
-    file_extension = file_extension.lower()
-    if file_extension in supported_processed_formats:
-        return phasor_file_reader
-    elif file_extension in supported_raw_formats:
-        return raw_file_reader
-    else:
-        return unkonwn_reader_function
-
-def unkonwn_reader_function(path):
-    """Take a path or list of paths and return a list of LayerData tuples.
-
-    Readers are expected to return data as a list of tuples, where each tuple
-    is (data, [add_kwargs, [layer_type]]), "add_kwargs" and "layer_type" are
-    both optional.
-
+    """Maps file extension to reader function.
+    
     Parameters
     ----------
     path : str or list of str
         Path to file, or list of paths.
-
+        
     Returns
     -------
     layer_data : list of tuples
@@ -62,17 +52,41 @@ def unkonwn_reader_function(path):
         in napari, and layer_type is a lower-case string naming the type of
         layer. Both "meta", and "layer_type" are optional. napari will
         default to layer_type=="image" if not provided
+    
     """
-    # handle both a string and a list of strings
-    paths = [path] if isinstance(path, str) else path
-    # load all files into array
-    arrays = [np.load(_path) for _path in paths]
-    # stack arrays into single array
-    data = np.squeeze(np.stack(arrays))
-    # optional kwargs for the corresponding viewer.add_* method
-    add_kwargs = {}
+    _, file_extension = os.path.splitext(path)
+    file_extension = file_extension.lower()
+    if file_extension in extension_mapping['processed'].keys():
+        return phasor_file_reader
+    elif file_extension in extension_mapping['raw'].keys():
+        return raw_file_reader
+    else:
+        return unkonwn_reader_function
 
-    layer_type = "image"  # optional, default is "image"
+def unkonwn_reader_function(path):
+    """General reader function used for formats not supported.
+
+    Parameters
+    ----------
+    path : str or list of str
+        Path to file, or list of paths.
+
+    Returns
+    -------
+    layer_data : list of tuples
+        A list of LayerData tuples where each tuple in the list contains a
+        napari.layers.Labels layer a tuple  (data, kwargs), where data is 
+        the mean intensity image as an array, and kwargs is a a dict of
+        keyword arguments for the corresponding viewer.add_* method in napari,
+        which contains the 'name' of the layer as well as the 'metadata',
+        which is also a dict. The values for key 'phasor_features_labels_layer'
+        in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
+    """
+    paths = [path] if isinstance(path, str) else path
+    arrays = [np.load(_path) for _path in paths]
+    data = np.squeeze(np.stack(arrays))
+    add_kwargs = {}
+    layer_type = "image"  
     return [(data[0], add_kwargs, layer_type)]
 
 
@@ -98,20 +112,10 @@ def raw_file_reader(path):
         layer. Both "meta", and "layer_type" are optional. napari will
         default to layer_type=="image" if not provided
     """
-    extension_mapping = {
-        ".ptu": lambda path: io.read_ptu(path, frame=-1, keepdims=False),
-        ".fbd": lambda path: io.read_fbd(path, frame=-1, keepdims=False),
-        ".flif": lambda path: io.read_flif(path),
-        ".sdt": lambda path: io.read_sdt(path),
-        ".bh": lambda path: io.read_bh(path),
-        ".bhz": lambda path: io.read_bhz(path),
-        # ".ifli": lambda path: io.read_ifli(),
-        ".lsm": lambda path: io.read_lsm(path),
-    }
     filename = os.path.basename(path)
     _, file_extension = os.path.splitext(filename)
     file_extension = file_extension.lower()
-    raw_data = extension_mapping[file_extension](path)
+    raw_data = extension_mapping['raw'][file_extension](path)
     layers = []
     for channel in range(raw_data.shape[0]):
         mean_intensity_image, G_image, S_image = phasor_from_signal(raw_data[channel])
@@ -130,16 +134,10 @@ def raw_file_reader(path):
     return layers
 
 def phasor_file_reader(path):
-    extension_mapping = {
-        ".tif": lambda path: io.read_ometiff_phasor(path),
-        # ".b64": lambda path: io.read_b64(path),
-        # ".r64": lambda path: io.read_r64(path),
-        # ".ref": lambda path: io.read_ref(path)
-    }
     filename = os.path.basename(path)
     _, file_extension = os.path.splitext(filename)
     file_extension = file_extension.lower()
-    mean_intensity_image, G_image, S_image = extension_mapping[file_extension](path)
+    mean_intensity_image, G_image, S_image = extension_mapping['processed'][file_extension](path)
     mean_intensity_image, G_image, S_image = mean_intensity_image.values, G_image.values, S_image.values
     pixel_id = np.arange(1, mean_intensity_image.size + 1)
     layers = []
