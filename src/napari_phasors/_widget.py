@@ -39,6 +39,7 @@ from skimage.util import img_as_float
 from phasorpy.phasor import phasor_calibrate
 from phasorpy.plot import plot_phasor
 import matplotlib.pyplot as plt
+import biaplotter
 
 if TYPE_CHECKING:
     import napari

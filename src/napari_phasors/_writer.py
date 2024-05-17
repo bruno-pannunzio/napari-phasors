@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple, Union
 
+from phasorpy.io import write_ometiff_phasor
+
 if TYPE_CHECKING:
     DataType = Union[Any, Sequence[Any]]
     FullLayerData = Tuple[DataType, dict, str]
@@ -61,5 +63,32 @@ def write_multiple(path: str, data: List[FullLayerData]) -> List[str]:
 
     # implement your writer logic here ...
 
+    # return path to any file(s) that were successfully written
+    return [path]
+
+
+def write_ome_tiff(path: str, data: Any) -> List[str]:
+    """Writes a single image layer.
+
+    Parameters
+    ----------
+    path : str
+        A string path indicating where to save the image file.
+    data : The layer data
+        The `.data` attribute from the napari layer.
+    meta : dict
+        A dictionary containing all other attributes from the napari layer
+        (excluding the `.data` layer attribute).
+
+    Returns
+    -------
+    [path] : A list containing the string path to the saved file.
+    """
+    print(data)
+    # phasor_data = data.metadata['phasor_features_labels_layer']
+    # mean = data[0]
+    # G = phasor_data['G']
+    # S = phasor_data['S']
+    # write_ometiff_phasor(path, mean, G, S)
     # return path to any file(s) that were successfully written
     return [path]

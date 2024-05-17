@@ -277,10 +277,10 @@ def make_intensity_layer_with_phasors(raw_flim_data, axis=0, harmonic=None, file
     return mean_intensity_image_layer
 
 
-raw_flim_data = make_raw_flim_data()
-intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data)
+# raw_flim_data = make_raw_flim_data()
+# intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data)
 viewer = napari.Viewer()
-viewer.add_layer(intensity_image_layer)
+# viewer.add_layer(intensity_image_layer)
 plotter = PlotterWidget(viewer)
 viewer.window.add_dock_widget(plotter, area="right")
 napari.run()

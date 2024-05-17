@@ -33,10 +33,13 @@ contributions:
     - id: napari-phasors.plot_phasor
       python_name: napari_phasors:PlotPhasor
       title: Plot Phasor
+    - id: napari-phasors.write_ome_tiff
+      python_name: napari_phasors:write_ome_tiff
+      title: Write OME-TIFF
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
-      filename_patterns: ['*.fbd']
+      filename_patterns: ['*.fbd','*.ptu','*.ome.tif']
   writers:
     - command: napari-phasors.write_multiple
       layer_types: ['image*','labels*']
@@ -44,6 +47,10 @@ contributions:
     - command: napari-phasors.write_single_image
       layer_types: ['image']
       filename_extensions: ['.npy']
+    - command: napari-phasors.write_ome_tiff
+      display_name: Export Phasor OME-TIFF
+      layer_types: ['image*','labels*']
+      filename_extensions: []
   sample_data:
     - command: napari-phasors.make_sample_data
       display_name: Napari Phasors
