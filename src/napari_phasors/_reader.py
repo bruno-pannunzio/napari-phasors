@@ -39,6 +39,7 @@ Commented file extensions are not supported at the moment.
 iter_index_mapping = {
     ".ptu": 'C',
     ".lsm": None,
+    ".fbd": 'C',
 }
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
