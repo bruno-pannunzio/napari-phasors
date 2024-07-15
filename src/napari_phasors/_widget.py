@@ -41,6 +41,7 @@ from pathlib import Path
 from napari.layers import Image
 from napari_phasors.plotter import PlotterWidget
 from phasorpy.phasor import phasor_calibrate
+from napari.utils.notifications import show_error
 
 if TYPE_CHECKING:
     import napari
@@ -164,8 +165,8 @@ class CalibrationWidget(QWidget):
         mainLayout.addWidget(self.calibration_widget)
         self.setLayout(mainLayout)
         # Call plotter with calibrated layer in the combobox
-        plotter = PlotterWidget(self.viewer)
-        self.viewer.window.add_dock_widget(plotter)
+        self.plotter = PlotterWidget(self.viewer)
+        self.viewer.window.add_dock_widget(self.plotter)
 
     def _populate_comboboxes(self):
         self.calibration_widget.calibration_layer_combobox.clear()
@@ -185,18 +186,22 @@ class CalibrationWidget(QWidget):
         lifetime = float(self.calibration_widget.lifetime_line_edit_widget.text())
         sample_name = self.calibration_widget.sample_layer_combobox.currentText()
         cal_name = self.calibration_widget.calibration_layer_combobox.currentText()
-        sample_phasor_data = self.viewer.layers[sample_name].metadata['phasor_features_labels_layer'].features
+        sample_metadata = self.viewer.layers[sample_name].metadata
+        sample_phasor_data = sample_metadata['phasor_features_labels_layer'].features
         cal_phasor_data = self.viewer.layers[cal_name].metadata['phasor_features_labels_layer'].features
-        g_img, s_img = phasor_calibrate(
-            sample_phasor_data['G'],
-            sample_phasor_data['S'],
-            cal_phasor_data['G'],
-            cal_phasor_data['S'],
-            frequency=frequency,
-            lifetime=lifetime,
-        )
-        sample_phasor_data['G'] = g_img
-        sample_phasor_data['S'] = s_img
-
-
-
+        print(sample_metadata.keys())
+        if 'calibrated' not in sample_metadata.keys() or sample_metadata['calibrated'] is False:
+            g_img, s_img = phasor_calibrate(
+                sample_phasor_data['G'],
+                sample_phasor_data['S'],
+                cal_phasor_data['G'],
+                cal_phasor_data['S'],
+                frequency=frequency,
+                lifetime=lifetime,
+            )
+            sample_phasor_data['G'] = g_img
+            sample_phasor_data['S'] = s_img
+            self.plotter.plot()
+            sample_metadata['calibrated'] = True
+        elif sample_metadata['calibrated'] == True:
+            show_error("Layer already calibrated")
