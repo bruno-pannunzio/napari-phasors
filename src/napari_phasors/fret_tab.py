@@ -1,0 +1,446 @@
+import numpy as np
+from napari.layers import Image
+from napari.utils.notifications import show_error
+from phasorpy.phasor import phasor_from_fret_donor, phasor_nearest_neighbor
+from qtpy.QtCore import Qt
+from qtpy.QtGui import QDoubleValidator
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ._utils import update_frequency_in_metadata
+
+
+class FretWidget(QWidget):
+    """Widget to perform FLIM FRET analysis."""
+
+    def __init__(self, viewer, parent=None):
+        super().__init__()
+        self.viewer = viewer
+        self.parent_widget = parent
+        self.frequency = 0.0
+        self.donor_lifetime = 0.0
+        self._fret_efficiencies = np.linspace(0, 1, 100)
+        self.current_donor_line = None
+        self.fret_layer = None
+        self.colormap_contrast_limits = None
+        self.fret_colormap = None
+        self.use_colormap = True  # Add this line
+
+        # Initialize new parameters
+        self.donor_background = 0.1
+        self.background_real = 0.1
+        self.background_imag = 0.1
+        self.donor_fretting_proportion = 1.0
+
+        # Setup UI
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Set up the user interface for the FRET widget."""
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        # Donor lifetime and frequency
+        self.donor_line_edit = QLineEdit()
+        self.donor_line_edit.setPlaceholderText("Donor Lifetime (ns)")
+        self.donor_line_edit.setValidator(QDoubleValidator())
+        self.donor_line_edit.textChanged.connect(self._on_parameters_changed)
+        layout.addWidget(QLabel("Donor Lifetime (ns):"))
+        layout.addWidget(self.donor_line_edit)
+
+        self.frequency_input = QLineEdit()
+        self.frequency_input.setPlaceholderText("Frequency (MHz)")
+        self.frequency_input.setValidator(QDoubleValidator())
+        self.frequency_input.textChanged.connect(self._on_parameters_changed)
+        layout.addWidget(QLabel("Frequency (MHz):"))
+        layout.addWidget(self.frequency_input)
+
+        # Background slider (0 to 1)
+        layout.addWidget(QLabel("Donor Background:"))
+        self.background_slider = QSlider(Qt.Horizontal)
+        self.background_slider.setMinimum(0)
+        self.background_slider.setMaximum(100)
+        self.background_slider.setValue(10)  # 0.1 default
+        self.background_slider.valueChanged.connect(
+            self._on_background_slider_changed
+        )
+
+        self.background_label = QLabel("0.10")
+        background_layout = QHBoxLayout()
+        background_layout.addWidget(self.background_slider)
+        background_layout.addWidget(self.background_label)
+        layout.addLayout(background_layout)
+
+        # Background position line edits
+        layout.addWidget(QLabel("Background Position:"))
+        bg_pos_layout = QHBoxLayout()
+
+        bg_pos_layout.addWidget(QLabel("Real:"))
+        self.background_real_edit = QLineEdit()
+        self.background_real_edit.setPlaceholderText("0.1")
+        self.background_real_edit.setValidator(QDoubleValidator())
+        self.background_real_edit.setText("0.1")
+        self.background_real_edit.textChanged.connect(
+            self._on_parameters_changed
+        )
+        bg_pos_layout.addWidget(self.background_real_edit)
+
+        bg_pos_layout.addWidget(QLabel("Imag:"))
+        self.background_imag_edit = QLineEdit()
+        self.background_imag_edit.setPlaceholderText("0.1")
+        self.background_imag_edit.setValidator(QDoubleValidator())
+        self.background_imag_edit.setText("0.1")
+        self.background_imag_edit.textChanged.connect(
+            self._on_parameters_changed
+        )
+        bg_pos_layout.addWidget(self.background_imag_edit)
+
+        self.calculate_bg_button = QPushButton("Calculate")
+        self.calculate_bg_button.clicked.connect(
+            self._calculate_background_position
+        )
+        bg_pos_layout.addWidget(self.calculate_bg_button)
+
+        layout.addLayout(bg_pos_layout)
+
+        # Donor fretting proportion slider (0 to 1)
+        layout.addWidget(QLabel("Proportion of Donors Fretting:"))
+        self.fretting_slider = QSlider(Qt.Horizontal)
+        self.fretting_slider.setMinimum(0)
+        self.fretting_slider.setMaximum(100)
+        self.fretting_slider.setValue(100)  # 1.0 default
+        self.fretting_slider.valueChanged.connect(
+            self._on_fretting_slider_changed
+        )
+
+        self.fretting_label = QLabel("1.00")
+        fretting_layout = QHBoxLayout()
+        fretting_layout.addWidget(self.fretting_slider)
+        fretting_layout.addWidget(self.fretting_label)
+        layout.addLayout(fretting_layout)
+
+        # Colormap checkbox
+        self.colormap_checkbox = QCheckBox(
+            "Overlay colormap on donor trajectory"
+        )
+        self.colormap_checkbox.setChecked(True)  # Default checked
+        self.colormap_checkbox.stateChanged.connect(
+            self._on_colormap_checkbox_changed
+        )
+        layout.addWidget(self.colormap_checkbox)
+
+        # Plot button
+        self.calculate_fret_efficiency_button = QPushButton(
+            "Calculate FRET efficiency"
+        )
+        self.calculate_fret_efficiency_button.clicked.connect(
+            self.calculate_fret_efficiency
+        )
+        layout.addWidget(self.calculate_fret_efficiency_button)
+
+        layout.addStretch()  # Add stretch to push everything to top
+
+    def _on_background_slider_changed(self):
+        """Handle background slider value change."""
+        value = self.background_slider.value() / 100.0
+        self.donor_background = value
+        self.background_label.setText(f"{value:.2f}")
+        self._on_parameters_changed()
+
+    def _on_fretting_slider_changed(self):
+        """Handle fretting proportion slider value change."""
+        value = self.fretting_slider.value() / 100.0
+        self.donor_fretting_proportion = value
+        self.fretting_label.setText(f"{value:.2f}")
+        self._on_parameters_changed()
+
+    def _on_colormap_checkbox_changed(self):
+        """Handle colormap checkbox state change."""
+        self.use_colormap = self.colormap_checkbox.isChecked()
+        self.plot_donor_trajectory()
+
+    def _on_parameters_changed(self):
+        """Update plot when any parameter changes."""
+        # Only update if we have valid values
+        if (
+            self.donor_line_edit.text()
+            and self.frequency_input.text()
+            and self.background_real_edit.text()
+            and self.background_imag_edit.text()
+        ):
+            try:
+                self.frequency = (
+                    float(self.frequency_input.text().strip())
+                    * self.parent_widget.harmonic
+                )
+                self.donor_lifetime = float(self.donor_line_edit.text())
+                self.background_real = float(self.background_real_edit.text())
+                self.background_imag = float(self.background_imag_edit.text())
+                self.plot_donor_trajectory()
+            except ValueError:
+                pass  # Invalid input, skip update
+
+    def _calculate_background_position(self):
+        """Calculate the background position based on donor lifetime and frequency."""
+        pass
+
+    def plot_donor_trajectory(self):
+        """Plot the donor trajectory with current parameters."""
+        try:
+            # Clear previous line first
+            if self.current_donor_line is not None:
+                try:
+                    self.current_donor_line.remove()
+                except ValueError:
+                    pass  # Line might already be removed
+                self.current_donor_line = None
+
+            # Get current values
+            if not (
+                self.donor_line_edit.text() and self.frequency_input.text()
+            ):
+                return
+
+            self.frequency = (
+                float(self.frequency_input.text().strip())
+                * self.parent_widget.harmonic
+            )
+            self.donor_lifetime = float(self.donor_line_edit.text().strip())
+            self.background_real = float(
+                self.background_real_edit.text().strip()
+            )
+            self.background_imag = float(
+                self.background_imag_edit.text().strip()
+            )
+
+            # Calculate donor trajectory
+            donor_trajectory_real, donor_trajectory_imag = (
+                phasor_from_fret_donor(
+                    self.frequency,
+                    self.donor_lifetime,
+                    fret_efficiency=self._fret_efficiencies,
+                    donor_background=self.donor_background,
+                    background_imag=self.background_imag,
+                    background_real=self.background_real,
+                    donor_fretting=self.donor_fretting_proportion,
+                )
+            )
+
+            # Get the current axes
+            ax = self.parent_widget.canvas_widget.figure.gca()
+
+            # Plot with colormap if FRET layer exists AND checkbox is checked, otherwise simple line
+            if self.fret_layer is not None and self.use_colormap:
+                # Create colormap trajectory
+                self._draw_colormap_trajectory(
+                    ax, donor_trajectory_real, donor_trajectory_imag
+                )
+            else:
+                # Plot simple green line
+                self.current_donor_line = ax.plot(
+                    donor_trajectory_real,
+                    donor_trajectory_imag,
+                    color='green',
+                    linewidth=2,
+                    label='Donor Trajectory',
+                )[0]
+
+            # Refresh the canvas
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+        except Exception as e:
+            show_error(f"Error drawing line: {str(e)}")
+
+    def _draw_colormap_trajectory(self, ax, trajectory_real, trajectory_imag):
+        """Draw a colormap trajectory line."""
+        import matplotlib.pyplot as plt
+        from matplotlib.collections import PatchCollection
+        from matplotlib.colors import ListedColormap
+        from matplotlib.patches import Rectangle
+
+        # Bar properties
+        bar_height = 0.02  # Height of the colormap bar
+        num_segments = min(
+            50, len(trajectory_real) - 1
+        )  # Number of color segments
+
+        # Get colormap from stored colors or fallback
+        if hasattr(self, 'fret_colormap') and self.fret_colormap is not None:
+            colormap = ListedColormap(self.fret_colormap)
+        else:
+            colormap = plt.cm.turbo  # Use turbo as fallback
+
+        # Get the actual contrast limits from the FRET layer
+        if (
+            hasattr(self, 'colormap_contrast_limits')
+            and self.colormap_contrast_limits is not None
+        ):
+            vmin, vmax = self.colormap_contrast_limits
+        elif self.fret_layer is not None:
+            vmin, vmax = self.fret_layer.contrast_limits
+        else:
+            vmin, vmax = 0, 1
+
+        # Create segments
+        patches = []
+        colors = []
+
+        for i in range(num_segments):
+            # Get indices for this segment
+            start_idx = int(i * (len(trajectory_real) - 1) / num_segments)
+            end_idx = int((i + 1) * (len(trajectory_real) - 1) / num_segments)
+
+            # Get coordinates
+            x1, y1 = trajectory_real[start_idx], trajectory_imag[start_idx]
+            x2, y2 = trajectory_real[end_idx], trajectory_imag[end_idx]
+
+            # Calculate line properties
+            dx = x2 - x1
+            dy = y2 - y1
+            length = np.sqrt(dx**2 + dy**2)
+
+            if length == 0:
+                continue
+
+            # Normalize direction vector
+            dx_norm = dx / length
+            dy_norm = dy / length
+
+            # Perpendicular vector for height
+            perp_x = -dy_norm
+            perp_y = dx_norm
+
+            # Center of this segment
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+
+            # Create rectangle for this segment
+            # Bottom-left corner
+            corner_x = (
+                center_x - (length / 2) * dx_norm - (bar_height / 2) * perp_x
+            )
+            corner_y = (
+                center_y - (length / 2) * dy_norm - (bar_height / 2) * perp_y
+            )
+
+            # Create rectangle
+            rect = Rectangle(
+                (corner_x, corner_y),
+                length,
+                bar_height,
+                angle=np.degrees(np.arctan2(dy, dx)),
+            )
+            patches.append(rect)
+
+            # FRET efficiency value for this segment (0 to 1)
+            fret_value = self._fret_efficiencies[start_idx]
+            colors.append(fret_value)
+
+        # Create patch collection
+        pc = PatchCollection(patches, cmap=colormap, alpha=0.8)
+        pc.set_array(np.array(colors))
+
+        # Set color limits to match the FRET layer
+        pc.set_clim(vmin, vmax)
+
+        # Add to axes
+        self.current_donor_line = ax.add_collection(pc)
+
+    def _on_colormap_changed(self, event):
+        """Handle changes to the colormap of the FRET layer."""
+        if self.fret_layer is not None:
+            layer = event.source
+            self.fret_colormap = layer.colormap.colors
+            self.colormap_contrast_limits = layer.contrast_limits
+
+            # Redraw the donor trajectory with updated colormap
+            self.plot_donor_trajectory()
+
+            # Also redraw component line if it exists
+            if (
+                hasattr(self, 'component_line')
+                and self.component_line is not None
+            ):
+                self.draw_line_between_components()
+
+    def _on_contrast_limits_changed(self, event):
+        """Handle changes to the contrast limits of the FRET layer."""
+        if self.fret_layer is not None:
+            layer = event.source
+            self.colormap_contrast_limits = layer.contrast_limits
+
+            # Redraw the donor trajectory with updated contrast limits
+            self.plot_donor_trajectory()
+
+            # Also redraw component line if it exists
+            if (
+                hasattr(self, 'component_line')
+                and self.component_line is not None
+            ):
+                self.draw_line_between_components()
+
+    def calculate_fret_efficiency(self):
+        """Calculate FRET efficiency based on donor intensities."""
+        if self.parent_widget._labels_layer_with_phasor_features is None:
+            return
+        labels_layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not labels_layer_name:
+            return
+
+        phasor_data = (
+            self.parent_widget._labels_layer_with_phasor_features.features
+        )
+        harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
+        real = phasor_data.loc[harmonic_mask, 'G']
+        imag = phasor_data.loc[harmonic_mask, 'S']
+
+        neighbor_real, neighbor_imag = self.current_donor_line.get_xydata().T
+
+        fret_efficiency = phasor_nearest_neighbor(
+            np.array(real),
+            np.array(imag),
+            neighbor_real,
+            neighbor_imag,
+            values=self._fret_efficiencies,
+        )
+        fret_efficiency = fret_efficiency.reshape(
+            self.parent_widget._labels_layer_with_phasor_features.data.shape
+        )
+
+        fret_layer_name = f"FRET efficiency: {labels_layer_name}"
+        selected_fret_layer = Image(
+            fret_efficiency,
+            name=fret_layer_name,
+            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            colormap='turbo',
+        )
+
+        # Check if the layer is in the viewer before attempting to remove it
+        if fret_layer_name in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[fret_layer_name])
+
+        self.fret_layer = self.viewer.add_layer(selected_fret_layer)
+        self.fret_colormap = self.fret_layer.colormap.colors
+        self.fret_layer.events.colormap.connect(self._on_colormap_changed)
+        self.colormap_contrast_limits = self.fret_layer.contrast_limits
+        self.fret_layer.events.contrast_limits.connect(
+            self._on_contrast_limits_changed  # Fix: connect to the correct method
+        )
+
+        # Redraw the trajectory with the new colormap
+        self.plot_donor_trajectory()
+
+        update_frequency_in_metadata(
+            self.parent_widget,
+            self.frequency_input.text().strip(),  # Ensure frequency is updated in metadata
+        )
