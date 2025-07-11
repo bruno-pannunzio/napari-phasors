@@ -108,7 +108,7 @@ class ComponentsWidget(QWidget):
         coord2_layout.addWidget(self.second_edit2)
 
         # Calculate button
-        self.calculate_button = QPushButton("Perform Analysis")
+        self.calculate_button = QPushButton("Analyze")
         self.calculate_button.clicked.connect(self.on_calculate_button_clicked)
 
         # Add all layouts to main layout

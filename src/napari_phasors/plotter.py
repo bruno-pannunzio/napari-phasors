@@ -265,6 +265,23 @@ class PlotterWidget(QWidget):
         # Populate labels layer combobox
         self.reset_layer_choices()
 
+        self.canvas_widget.figure.canvas.mpl_connect(
+            'button_press_event', self._on_canvas_click
+        )
+    
+    def _on_canvas_click(self, event):
+        """Handle click events on the canvas widget."""
+        if event.inaxes != self.canvas_widget.axes:
+            return None, None
+        # Check if the click is on the canvas widget axes
+        if event.button == 1:  # Left click
+            # Get the coordinates of the click
+            x, y = event.xdata, event.ydata
+            if x is not None and y is not None:
+                return x, y
+        return None, None
+
+
     def on_white_background_changed(self, state):
         """Callback function when the white background checkbox is toggled."""
         self.set_axes_labels()
