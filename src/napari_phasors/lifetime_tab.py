@@ -23,7 +23,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ._utils import RangeSlider, update_frequency_in_metadata
+from ._utils import update_frequency_in_metadata
+from superqt import QRangeSlider
 
 if TYPE_CHECKING:
     import napari
@@ -91,13 +92,13 @@ class LifetimeWidget(QWidget):
         self.main_layout.addWidget(self.plot_lifetime_button)
 
         # Add lifetime range slider
-        self.lifetime_range_label = QLabel("Lifetime range (ns): 0.0 - 0.0")
+        self.lifetime_range_label = QLabel("Lifetime range (ns): 0.0 - 100.0")
         self.main_layout.addWidget(self.lifetime_range_label)
 
         # Add line edits for manual entry
         lifetime_range_edit_layout = QHBoxLayout()
         self.lifetime_min_edit = QLineEdit("0.0")
-        self.lifetime_max_edit = QLineEdit("0.0")
+        self.lifetime_max_edit = QLineEdit("100.0")
         self.lifetime_min_edit.setValidator(QDoubleValidator())
         self.lifetime_max_edit.setValidator(QDoubleValidator())
         lifetime_range_edit_layout.addWidget(QLabel("Min:"))
@@ -106,8 +107,11 @@ class LifetimeWidget(QWidget):
         lifetime_range_edit_layout.addWidget(self.lifetime_max_edit)
         self.main_layout.addLayout(lifetime_range_edit_layout)
 
-        self.lifetime_range_slider = RangeSlider(0, 1000, 0, 1000)
-        self.lifetime_range_slider.rangeChanged.connect(
+        self.lifetime_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
+        self.lifetime_range_slider.setRange(0, 100)
+        self.lifetime_range_slider.setValue((0, 100))
+        self.lifetime_range_slider.setBarMovesAllHandles(False)
+        self.lifetime_range_slider.valueChanged.connect(
             self._on_lifetime_range_changed
         )
         self.main_layout.addWidget(self.lifetime_range_slider)
@@ -133,8 +137,9 @@ class LifetimeWidget(QWidget):
         self.main_layout.addWidget(self.histogram_widget)
         self.histogram_widget.hide()
 
-    def _on_lifetime_range_changed(self, min_val, max_val):
+    def _on_lifetime_range_changed(self, value):
         """Callback when lifetime range slider changes."""
+        min_val, max_val = value  # Unpack the tuple
         min_lifetime = min_val / self.lifetime_range_factor
         max_lifetime = max_val / self.lifetime_range_factor
         self.lifetime_range_label.setText(
@@ -240,8 +245,8 @@ class LifetimeWidget(QWidget):
                     self.max_lifetime * self.lifetime_range_factor
                 )
 
-        self.lifetime_range_slider.set_range(0, max_slider_val)
-        self.lifetime_range_slider.set_values(min_slider_val, max_slider_val)
+        self.lifetime_range_slider.setRange(0, max_slider_val)
+        self.lifetime_range_slider.setValue((min_slider_val, max_slider_val))
 
         # Update label
         self.lifetime_range_label.setText(
@@ -266,8 +271,8 @@ class LifetimeWidget(QWidget):
 
         min_slider = int(min_val * self.lifetime_range_factor)
         max_slider = int(max_val * self.lifetime_range_factor)
-        self.lifetime_range_slider.set_values(min_slider, max_slider)
-        self._on_lifetime_range_changed(min_slider, max_slider)
+        self.lifetime_range_slider.setValue((min_slider, max_slider))
+        self._on_lifetime_range_changed((min_slider, max_slider))
 
     def _on_lifetime_max_edit(self):
         min_val = float(self.lifetime_min_edit.text())
@@ -283,8 +288,8 @@ class LifetimeWidget(QWidget):
 
         min_slider = int(min_val * self.lifetime_range_factor)
         max_slider = int(max_val * self.lifetime_range_factor)
-        self.lifetime_range_slider.set_values(min_slider, max_slider)
-        self._on_lifetime_range_changed(min_slider, max_slider)
+        self.lifetime_range_slider.setValue((min_slider, max_slider))
+        self._on_lifetime_range_changed((min_slider, max_slider))
 
     def plot_lifetime_histogram(self):
         """Plot the histogram of the lifetime data as a line plot."""
@@ -350,14 +355,23 @@ class LifetimeWidget(QWidget):
         self.hist_ax.clear()
         self.hist_ax.plot(self.bin_centers, self.counts, color='none', alpha=0)
 
-        # Create the colormap by linear combination of the napari cmap
-        cmap = LinearSegmentedColormap.from_list(
-            'custom_cmap', self.lifetime_colormap
-        )
-        norm = plt.Normalize(
-            vmin=self.colormap_contrast_limits[0],
-            vmax=self.colormap_contrast_limits[1],
-        )
+        # Check if colormap is available, if not use a default one
+        if self.lifetime_colormap is None or self.colormap_contrast_limits is None:
+            # Use a default colormap if napari colormap is not available yet
+            cmap = plt.cm.turbo
+            norm = plt.Normalize(
+                vmin=np.min(self.bin_centers) if len(self.bin_centers) > 0 else 0,
+                vmax=np.max(self.bin_centers) if len(self.bin_centers) > 0 else 1,
+            )
+        else:
+            # Create the colormap by linear combination of the napari cmap
+            cmap = LinearSegmentedColormap.from_list(
+                'custom_cmap', self.lifetime_colormap
+            )
+            norm = plt.Normalize(
+                vmin=self.colormap_contrast_limits[0],
+                vmax=self.colormap_contrast_limits[1],
+            )
 
         for count, bin_start, bin_end in zip(
             self.counts, self.bin_edges[:-1], self.bin_edges[1:]
