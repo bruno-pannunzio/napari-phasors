@@ -268,6 +268,51 @@ class PlotterWidget(QWidget):
         self.canvas_widget.figure.canvas.mpl_connect(
             'button_press_event', self._on_canvas_click
         )
+
+        # Connect tab change signal
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        """Handle tab change events to show/hide tab-specific lines."""
+        # Get the current tab widget
+        current_tab = self.tab_widget.widget(index)
+        
+        # Hide all tab-specific artists first
+        self._hide_all_tab_artists()
+        
+        # Show artists for the current tab
+        self._show_tab_artists(current_tab)
+        
+        # Refresh canvas
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _hide_all_tab_artists(self):
+        """Hide all tab-specific artists."""
+        # Hide components tab artists
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
+        
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
+        
+
+    def _show_tab_artists(self, current_tab):
+        """Show artists for the specified tab."""
+        if current_tab == getattr(self, 'components_tab', None):
+            self._set_components_visibility(True)
+        elif current_tab == getattr(self, 'fret_tab', None):
+            self._set_fret_visibility(True)
+
+    def _set_components_visibility(self, visible):
+        """Set visibility of components tab artists."""
+        if hasattr(self, 'components_tab'):
+            self.components_tab.set_artists_visible(visible)
+
+    def _set_fret_visibility(self, visible):
+        """Set visibility of FRET tab artists."""
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab.set_artists_visible(visible)
     
     def _on_canvas_click(self, event):
         """Handle click events on the canvas widget."""

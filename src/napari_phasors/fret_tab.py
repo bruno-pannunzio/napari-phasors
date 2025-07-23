@@ -148,6 +148,19 @@ class FretWidget(QWidget):
 
         layout.addStretch()  # Add stretch to push everything to top
 
+    def get_all_artists(self):
+        """Return a list of all matplotlib artists created by this widget."""
+        artists = []
+        if self.current_donor_line is not None:
+            artists.append(self.current_donor_line)
+        return artists
+
+    def set_artists_visible(self, visible):
+        """Set visibility of all artists created by this widget."""
+        for artist in self.get_all_artists():
+            if hasattr(artist, 'set_visible'):
+                artist.set_visible(visible)
+
     def _on_background_slider_changed(self):
         """Handle background slider value change."""
         value = self.background_slider.value() / 100.0

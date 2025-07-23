@@ -121,6 +121,27 @@ class ComponentsWidget(QWidget):
 
         self.setLayout(layout)
 
+    def get_all_artists(self):
+        """Return a list of all matplotlib artists created by this widget."""
+        artists = []
+        if self.component1_dot is not None:
+            artists.append(self.component1_dot)
+        if self.component2_dot is not None:
+            artists.append(self.component2_dot)
+        if self.component1_text is not None:
+            artists.append(self.component1_text)
+        if self.component2_text is not None:
+            artists.append(self.component2_text)
+        if self.component_line is not None:
+            artists.append(self.component_line)
+        return artists
+
+    def set_artists_visible(self, visible):
+        """Set visibility of all artists created by this widget."""
+        for artist in self.get_all_artists():
+            if hasattr(artist, 'set_visible'):
+                artist.set_visible(visible)
+
     def _on_component1_coords_changed(self):
         """Handle changes to component 1 coordinates in line edits."""
         # Allow updates even if component doesn't exist yet
