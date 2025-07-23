@@ -8,6 +8,7 @@ from matplotlib.backends.backend_qt5agg import (
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -16,15 +17,36 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QCollapsible
 
 from ._utils import apply_filter_and_threshold
 
 
 class FilterWidget(QWidget):
-    """Widget to perform Filtering and Thresholding."""
+    """Widget for interactive filtering and thresholding of phasor features.
+
+    Provides controls for:
+      - Median filtering (kernel size and repetitions)
+      - Intensity thresholding via a slider
+      - Visualization of the mean intensity histogram with a dynamic line
+      - Applying filter and threshold operations to the selected image layer
+
+    Parameters
+    ----------
+    viewer : napari.Viewer
+        The napari viewer instance.
+    parent : QWidget, optional
+        The parent widget.
+
+    Notes
+    -----
+    This widget is intended to be used as a tab within the main PlotterWidget.
+    It updates the histogram and threshold interactively and applies changes
+    directly to the selected layer.
+
+    """
 
     def __init__(self, viewer, parent=None):
+        """Initialize the FilterWidget."""
         super().__init__()
         self.parent_widget = parent
         self.viewer = viewer
@@ -33,8 +55,13 @@ class FilterWidget(QWidget):
         self.parent_widget._labels_layer_with_phasor_features = None
         self._phasors_selected_layer = None
         self.threshold_factor = 1
-        self.hist_fig, self.hist_ax = plt.subplots(figsize=(8, 4))
-        self.threshold_line = None  # Store reference to the threshold line
+        self.hist_fig, self.hist_ax = plt.subplots(
+            figsize=(8, 4), constrained_layout=True
+        )
+        self.threshold_line = None
+
+        # Style the histogram axes and figure initially
+        self.style_histogram_axes()
 
         # Create UI elements
         self.setup_ui()
@@ -43,18 +70,12 @@ class FilterWidget(QWidget):
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self.on_labels_layer_with_phasor_features_changed
         )
-
-        # Connect threshold slider
         self.threshold_slider.valueChanged.connect(
             self.on_threshold_slider_change
         )
-
-        # Connect kernel size spinbox
         self.median_filter_spinbox.valueChanged.connect(
             self.on_kernel_size_change
         )
-
-        # Connect apply button
         self.apply_button.clicked.connect(self.apply_button_clicked)
 
     def setup_ui(self):
@@ -66,40 +87,43 @@ class FilterWidget(QWidget):
         scroll_layout = QVBoxLayout(scroll_content)
 
         # Median filter kernel size
+        median_filter_layout = QHBoxLayout()
         self.label_4 = QLabel("Median Filter Kernel Size: 3 x 3")
-        scroll_layout.addWidget(self.label_4)
         self.median_filter_spinbox = QSpinBox()
         self.median_filter_spinbox.setMinimum(2)
         self.median_filter_spinbox.setMaximum(99)
         self.median_filter_spinbox.setValue(3)
-        scroll_layout.addWidget(self.median_filter_spinbox)
+        median_filter_layout.addWidget(self.label_4)
+        median_filter_layout.addWidget(self.median_filter_spinbox)
+        scroll_layout.addLayout(median_filter_layout)
 
         # Median filter repetitions
-        scroll_layout.addWidget(QLabel("Filter Repetitions:"))
+        repetitions_layout = QHBoxLayout()
+        repetitions_layout.addWidget(QLabel("Filter Repetitions:"))
         self.median_filter_repetition_spinbox = QSpinBox()
         self.median_filter_repetition_spinbox.setMinimum(0)
-        # self.median_filter_repetition_spinbox.setMaximum(10)
         self.median_filter_repetition_spinbox.setValue(0)
-        scroll_layout.addWidget(self.median_filter_repetition_spinbox)
+        repetitions_layout.addWidget(self.median_filter_repetition_spinbox)
+        scroll_layout.addLayout(repetitions_layout)
 
         # Threshold slider and label
+        theshold_slider_layout = QHBoxLayout()
         self.label_3 = QLabel("Intensity threshold: 0")
-        scroll_layout.addWidget(self.label_3)
+        theshold_slider_layout.addWidget(self.label_3)
         self.threshold_slider = QSlider(Qt.Horizontal)
         self.threshold_slider.setMinimum(0)
         self.threshold_slider.setMaximum(100)
         self.threshold_slider.setValue(0)
-        scroll_layout.addWidget(self.threshold_slider)
-
-        # Add collapsible widget
-        self.histogram_widget = QCollapsible("Show Mean Intensity Histogram")
-        scroll_layout.addWidget(self.histogram_widget)
+        theshold_slider_layout.addWidget(self.threshold_slider)
+        scroll_layout.addLayout(theshold_slider_layout)
 
         # Embed the Matplotlib figure into the widget with fixed size
         canvas = FigureCanvas(self.hist_fig)
-        canvas.setMinimumHeight(300)  # Set minimum height for canvas
-        canvas.setMaximumHeight(400)  # Set maximum height for canvas
-        self.histogram_widget.addWidget(canvas)
+        canvas.setFixedHeight(150)
+        canvas.setSizePolicy(
+            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
+        )
+        scroll_layout.addWidget(canvas)
 
         # Set scroll area
         scroll_area = QScrollArea()
@@ -114,7 +138,7 @@ class FilterWidget(QWidget):
         self.setLayout(layout)
 
     def on_labels_layer_with_phasor_features_changed(self):
-        """Callback function when the image layer with phasor features combobox is changed."""
+        """Callback function when the image layer combobox is changed."""
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -127,15 +151,15 @@ class FilterWidget(QWidget):
         ]
 
         max_mean_value = np.nanmax(layer_metadata["original_mean"])
-        # Determine the threshold factor based on max_mean_value using logarithmic scaling
+        # Calculate threshold factor based on maximum mean value
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
             self.threshold_factor = (
                 10 ** (2 - magnitude) if magnitude <= 2 else 1
             )
         else:
-            self.threshold_factor = 1  # Default case for values less than 1
-        # Set threshold slider maximum value based on maximum mean
+            self.threshold_factor = 1
+
         self.threshold_slider.setMaximum(
             ceil(max_mean_value * self.threshold_factor)
         )
@@ -167,6 +191,7 @@ class FilterWidget(QWidget):
         self.plot_mean_histogram()
 
     def on_threshold_slider_change(self):
+        """Callback function when the threshold slider value changes."""
         self.label_3.setText(
             'Intensity threshold: '
             + str(self.threshold_slider.value() / self.threshold_factor)
@@ -178,6 +203,28 @@ class FilterWidget(QWidget):
         kernel_value = self.median_filter_spinbox.value()
         self.label_4.setText(
             'Median Filter Kernel Size: ' + f'{kernel_value} x {kernel_value}'
+        )
+
+    def style_histogram_axes(self):
+        """Apply consistent styling to the histogram axes and figure."""
+        self.hist_ax.patch.set_alpha(0)
+        self.hist_fig.patch.set_alpha(0)
+        for spine in self.hist_ax.spines.values():
+            spine.set_color('grey')
+            spine.set_linewidth(1)
+        self.hist_ax.set_ylabel("Count", fontsize=6, color='grey')
+        self.hist_ax.set_xlabel("Mean Intensity", fontsize=6, color='grey')
+        self.hist_ax.tick_params(
+            axis='x', which='major', labelsize=7, colors='grey'
+        )
+        self.hist_ax.tick_params(
+            axis='x', which='minor', labelsize=7, colors='grey'
+        )
+        self.hist_ax.tick_params(
+            axis='y', which='major', labelsize=7, colors='grey'
+        )
+        self.hist_ax.tick_params(
+            axis='y', which='minor', labelsize=7, colors='grey'
         )
 
     def plot_mean_histogram(self):
@@ -194,10 +241,12 @@ class FilterWidget(QWidget):
         )
         self.hist_ax.clear()
         self.threshold_line = None  # Reset line reference when clearing
-        self.hist_ax.hist(mean_data.flatten(), bins=100, color='gray')
-        self.hist_ax.set_xlabel("Mean Intensity")
-        self.hist_ax.set_ylabel("Count")
-        self.hist_ax.set_title("Mean Intensity Histogram")
+        self.hist_ax.hist(
+            mean_data.flatten(), bins=100, color='white', edgecolor='white'
+        )
+        # Apply styling after clearing/plotting
+        self.style_histogram_axes()
+
         # Add the threshold line if slider has a value
         self.update_threshold_line()
         self.hist_fig.canvas.draw_idle()
