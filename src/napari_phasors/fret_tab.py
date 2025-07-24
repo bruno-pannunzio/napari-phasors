@@ -27,7 +27,7 @@ class FretWidget(QWidget):
         self.parent_widget = parent
         self.frequency = 0.0
         self.donor_lifetime = 0.0
-        self._fret_efficiencies = np.linspace(0, 1, 100)
+        self._fret_efficiencies = np.linspace(0, 1, 500)
         self.current_donor_line = None
         self.fret_layer = None
         self.colormap_contrast_limits = None
@@ -275,14 +275,13 @@ class FretWidget(QWidget):
     def _draw_colormap_trajectory(self, ax, trajectory_real, trajectory_imag):
         """Draw a colormap trajectory line."""
         import matplotlib.pyplot as plt
-        from matplotlib.collections import PatchCollection
+        from matplotlib.collections import LineCollection
         from matplotlib.colors import ListedColormap
-        from matplotlib.patches import Rectangle
 
-        # Bar properties
-        bar_height = 0.02  # Height of the colormap bar
+        # Higher density_factor = more segments = smoother appearance
+        density_factor = 5  # Adjust this value to control detail level
         num_segments = min(
-            50, len(trajectory_real) - 1
+            len(trajectory_real) * density_factor, len(trajectory_real) - 1
         )  # Number of color segments
 
         # Get colormap from stored colors or fallback
@@ -302,70 +301,38 @@ class FretWidget(QWidget):
         else:
             vmin, vmax = 0, 1
 
-        # Create segments
-        patches = []
+        # Create line segments
+        segments = []
         colors = []
 
         for i in range(num_segments):
-            # Get indices for this segment
+            # Get indices for this segment with overlap
             start_idx = int(i * (len(trajectory_real) - 1) / num_segments)
             end_idx = int((i + 1) * (len(trajectory_real) - 1) / num_segments)
+            
+            # Ensure we don't go out of bounds
+            end_idx = min(end_idx, len(trajectory_real) - 1)
+            
+            # For segments after the first, start slightly before to overlap
+            if i > 0:
+                start_idx = max(0, start_idx - 1)
 
-            # Get coordinates
-            x1, y1 = trajectory_real[start_idx], trajectory_imag[start_idx]
-            x2, y2 = trajectory_real[end_idx], trajectory_imag[end_idx]
-
-            # Calculate line properties
-            dx = x2 - x1
-            dy = y2 - y1
-            length = np.sqrt(dx**2 + dy**2)
-
-            if length == 0:
-                continue
-
-            # Normalize direction vector
-            dx_norm = dx / length
-            dy_norm = dy / length
-
-            # Perpendicular vector for height
-            perp_x = -dy_norm
-            perp_y = dx_norm
-
-            # Center of this segment
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-
-            # Create rectangle for this segment
-            # Bottom-left corner
-            corner_x = (
-                center_x - (length / 2) * dx_norm - (bar_height / 2) * perp_x
-            )
-            corner_y = (
-                center_y - (length / 2) * dy_norm - (bar_height / 2) * perp_y
-            )
-
-            # Create rectangle
-            rect = Rectangle(
-                (corner_x, corner_y),
-                length,
-                bar_height,
-                angle=np.degrees(np.arctan2(dy, dx)),
-            )
-            patches.append(rect)
+            # Create line segment
+            segment = [(trajectory_real[start_idx], trajectory_imag[start_idx]),
+                      (trajectory_real[end_idx], trajectory_imag[end_idx])]
+            segments.append(segment)
 
             # FRET efficiency value for this segment (0 to 1)
             fret_value = self._fret_efficiencies[start_idx]
             colors.append(fret_value)
 
-        # Create patch collection
-        pc = PatchCollection(patches, cmap=colormap, alpha=0.8)
-        pc.set_array(np.array(colors))
-
-        # Set color limits to match the FRET layer
-        pc.set_clim(vmin, vmax)
+        # Create line collection
+        lc = LineCollection(segments, cmap=colormap, linewidths=3)
+        lc.set_array(np.array(colors))
+        lc.set_clim(vmin, vmax)
 
         # Add to axes
-        self.current_donor_line = ax.add_collection(pc)
+        self.current_donor_line = ax.add_collection(lc)
 
     def _on_colormap_changed(self, event):
         """Handle changes to the colormap of the FRET layer."""

@@ -431,29 +431,29 @@ class ComponentsWidget(QWidget):
     def _draw_colormap_line(self, ax, x1, y1, x2, y2):
         """Draw a colormap bar between two components."""
         import matplotlib.pyplot as plt
-        from matplotlib.collections import PatchCollection
+        from matplotlib.collections import LineCollection
         from matplotlib.colors import ListedColormap
-        from matplotlib.patches import Rectangle
+        import numpy as np
 
         # Calculate line properties
         dx = x2 - x1
         dy = y2 - y1
         length = np.sqrt(dx**2 + dy**2)
 
-        # Normalize direction vector
-        if length > 0:
-            dx_norm = dx / length
-            dy_norm = dy / length
-        else:
+        if length == 0:
             return
 
-        # Perpendicular vector for height
-        perp_x = -dy_norm
-        perp_y = dx_norm
+        # Create points array for the line
+        t_values = np.linspace(0, 1, 500)
+        
+        trajectory_real = x1 + t_values * dx
+        trajectory_imag = y1 + t_values * dy
 
-        # Bar properties
-        bar_height = 0.02  # Height of the colormap bar
-        num_segments = 50  # Number of color segments
+        # Higher density_factor = more segments = smoother appearance
+        density_factor = 2  # Adjust this value to control detail level
+        num_segments = min(
+            len(trajectory_real) * density_factor, len(trajectory_real) - 1
+        )  # Number of color segments
 
         # Get colormap from stored colors or fallback
         if (
@@ -475,59 +475,40 @@ class ComponentsWidget(QWidget):
         else:
             vmin, vmax = 0, 1
 
-        # Create segments
-        patches = []
+        # Create line segments
+        segments = []
         colors = []
 
         for i in range(num_segments):
-            # Position along the line (0 to 1)
-            t = i / (num_segments - 1) if num_segments > 1 else 0
+            # Get indices for this segment with overlap
+            start_idx = int(i * (len(trajectory_real) - 1) / num_segments)
+            end_idx = int((i + 1) * (len(trajectory_real) - 1) / num_segments)
+            
+            # Ensure we don't go out of bounds
+            end_idx = min(end_idx, len(trajectory_real) - 1)
+            
+            # For segments after the first, start slightly before to overlap
+            if i > 0:
+                start_idx = max(0, start_idx - 1)
 
-            # The line always represents the full fraction range (1 to 0)
-            # Component 1 (t=0) = fraction 1.0, Component 2 (t=1) = fraction 0.0
+            # Create line segment
+            segment = [(trajectory_real[start_idx], trajectory_imag[start_idx]),
+                      (trajectory_real[end_idx], trajectory_imag[end_idx])]
+            segments.append(segment)
+
+            # Calculate fraction value for this segment
+            # Component 1 (start) = fraction 1.0, Component 2 (end) = fraction 0.0
+            t = start_idx / (len(trajectory_real) - 1) if len(trajectory_real) > 1 else 0
             fraction_value = 1.0 - t  # Linear from 1.0 to 0.0
+            colors.append(fraction_value)
 
-            # Center of this segment
-            center_x = x1 + t * dx
-            center_y = y1 + t * dy
-
-            # Segment width
-            segment_width = length / num_segments
-
-            # Create rectangle for this segment
-            # Bottom-left corner
-            corner_x = (
-                center_x
-                - (segment_width / 2) * dx_norm
-                - (bar_height / 2) * perp_x
-            )
-            corner_y = (
-                center_y
-                - (segment_width / 2) * dy_norm
-                - (bar_height / 2) * perp_y
-            )
-
-            # Create rectangle
-            rect = Rectangle(
-                (corner_x, corner_y),
-                segment_width,
-                bar_height,
-                angle=np.degrees(np.arctan2(dy, dx)),
-            )
-            patches.append(rect)
-            colors.append(
-                fraction_value
-            )  # Always use the actual fraction (0-1)
-
-        # Create patch collection
-        pc = PatchCollection(patches, cmap=colormap, alpha=0.8)
-        pc.set_array(np.array(colors))
-
-        # Set color limits to match the fractions layer - this controls the color mapping
-        pc.set_clim(vmin, vmax)
+        # Create line collection
+        lc = LineCollection(segments, cmap=colormap, linewidths=4)
+        lc.set_array(np.array(colors))
+        lc.set_clim(vmin, vmax)
 
         # Add to axes
-        self.component_line = ax.add_collection(pc)
+        self.component_line = ax.add_collection(lc)
 
     def _on_colormap_changed(self, event):
         """Handle changes to the colormap of the fractions layer."""
