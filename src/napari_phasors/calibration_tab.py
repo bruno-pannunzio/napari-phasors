@@ -71,22 +71,6 @@ class CalibrationWidget(QWidget):
                 layer.name
             )
 
-    def _on_image_layer_changed(self):
-        """Handle changes to the image layer selection."""
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if layer_name == "":
-            return
-        layer_metadata = self.viewer.layers[layer_name].metadata
-        if (
-            'settings' in layer_metadata.keys()
-            and 'frequency' in layer_metadata['settings'].keys()
-        ):
-            self.calibration_widget.frequency_input.setText(
-                str(layer_metadata['settings']['frequency'])
-            )
-
     def _update_button_state(self):
         """Update button text and state based on current layer's calibration status."""
         sample_name = (
