@@ -320,7 +320,7 @@ class PlotterWidget(QWidget):
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
         # Broadcast frequency changes from the calibration tab to all tabs
         self.calibration_tab.calibration_widget.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_accross_tabs
+            self._broadcast_frequency_value_across_tabs
         )
 
     def _create_filter_tab(self):
@@ -645,9 +645,9 @@ class PlotterWidget(QWidget):
         frequency = self._get_frequency_from_layer()
         if frequency is None:
             return
-        self._broadcast_frequency_value_accross_tabs(str(frequency))
+        self._broadcast_frequency_value_across_tabs(str(frequency))
 
-    def _broadcast_frequency_value_accross_tabs(self, value):
+    def _broadcast_frequency_value_across_tabs(self, value):
         """
         Broadcast the frequency value to all relevant input fields.
         """
