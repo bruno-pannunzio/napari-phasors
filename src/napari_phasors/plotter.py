@@ -12,16 +12,19 @@ from napari.layers import Image
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSpinBox,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QCheckBox,
+    QFrame,
 )
 
 from ._utils import update_frequency_in_metadata
@@ -31,6 +34,120 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 from .selection_tab import SelectionWidget
+
+
+class PhasorLayerSelector(QWidget):
+    """A widget for selecting multiple phasor layers with checkboxes."""
+    
+    layers_changed = Signal()
+    
+    def __init__(self, viewer):
+        super().__init__()
+        self.viewer = viewer
+        self.setLayout(QVBoxLayout())
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(2)
+        
+        # Add header
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Phasor Layers:"))
+        
+        # Add select all/none buttons
+        select_all_btn = QPushButton("All")
+        select_all_btn.setMaximumWidth(40)
+        select_all_btn.setMaximumHeight(20)
+        select_all_btn.clicked.connect(self._select_all)
+        
+        select_none_btn = QPushButton("None")
+        select_none_btn.setMaximumWidth(40)
+        select_none_btn.setMaximumHeight(20)
+        select_none_btn.clicked.connect(self._select_none)
+        
+        header_layout.addWidget(select_all_btn)
+        header_layout.addWidget(select_none_btn)
+        header_layout.addStretch()
+        
+        header_widget = QWidget()
+        header_widget.setLayout(header_layout)
+        self.layout().addWidget(header_widget)
+        
+        # Create scrollable area for layer checkboxes
+        self.layer_checkboxes = {}
+        self.layers_frame = QFrame()
+        self.layers_frame.setLayout(QVBoxLayout())
+        self.layers_frame.layout().setContentsMargins(5, 0, 0, 0)
+        self.layers_frame.setMaximumHeight(150)  # Limit height
+        
+        self.layout().addWidget(self.layers_frame)
+        
+        # Connect to viewer events
+        self.viewer.layers.events.inserted.connect(self._update_layer_list)
+        self.viewer.layers.events.removed.connect(self._update_layer_list)
+        
+        self._update_layer_list()
+    
+    def _update_layer_list(self):
+        """Update the list of available phasor layers."""
+        # Clear existing checkboxes
+        for checkbox in self.layer_checkboxes.values():
+            checkbox.deleteLater()
+        self.layer_checkboxes.clear()
+        
+        # Get available phasor layers
+        phasor_layers = [
+            layer for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and "phasor_features_labels_layer" in layer.metadata.keys()
+        ]
+        
+        # Create checkboxes for each layer
+        for layer in phasor_layers:
+            checkbox = QCheckBox(layer.name)
+            checkbox.setMaximumHeight(20)
+            checkbox.stateChanged.connect(self._on_selection_changed)
+            
+            # Connect to layer name changes
+            layer.events.name.connect(lambda event, cb=checkbox: cb.setText(event.source.name))
+            
+            self.layer_checkboxes[layer.name] = checkbox
+            self.layers_frame.layout().addWidget(checkbox)
+        
+        # Add stretch at the end
+        self.layers_frame.layout().addStretch()
+        
+        self._on_selection_changed()
+    
+    def _select_all(self):
+        """Select all available layers."""
+        for checkbox in self.layer_checkboxes.values():
+            checkbox.setChecked(True)
+    
+    def _select_none(self):
+        """Deselect all layers."""
+        for checkbox in self.layer_checkboxes.values():
+            checkbox.setChecked(False)
+    
+    def _on_selection_changed(self):
+        """Emit signal when selection changes."""
+        self.layers_changed.emit()
+    
+    def get_selected_layers(self):
+        """Get list of selected layer objects."""
+        selected_layers = []
+        for layer_name, checkbox in self.layer_checkboxes.items():
+            if checkbox.isChecked() and layer_name in self.viewer.layers:
+                layer = self.viewer.layers[layer_name]
+                if "phasor_features_labels_layer" in layer.metadata:
+                    phasor_layer = layer.metadata["phasor_features_labels_layer"]
+                    selected_layers.append(phasor_layer)
+        return selected_layers
+    
+    def get_selected_layer_names(self):
+        """Get list of selected layer names."""
+        return [
+            layer_name for layer_name, checkbox in self.layer_checkboxes.items()
+            if checkbox.isChecked()
+        ]
 
 
 class PlotterWidget(QWidget):
@@ -50,8 +167,8 @@ class PlotterWidget(QWidget):
         The napari viewer object.
     canvas_widget : biaplotter.plotter.CanvasWidget
         The canvas widget for plotting phasor features (fixed at the top).
-    image_layer_with_phasor_features_combobox : QComboBox
-        The combobox for selecting the image layer with phasor features.
+    layer_selector : PhasorLayerSelector
+        The widget for selecting multiple phasor layers with checkboxes.
     harmonic_spinbox : QSpinBox
         The spinbox for selecting the harmonic.
     tab_widget : QTabWidget
@@ -89,7 +206,7 @@ class PlotterWidget(QWidget):
         self.viewer = napari_viewer
 
         self.setLayout(QVBoxLayout())
-        self._labels_layer_with_phasor_features = None
+        self._labels_layers_with_phasor_features = []
 
         # Create a splitter to separate canvas from controls
         splitter = QSplitter(Qt.Vertical)
@@ -112,24 +229,12 @@ class PlotterWidget(QWidget):
         controls_container = QWidget()
         controls_container.setLayout(QVBoxLayout())
 
-        # Add select image combobox
-        image_layer_layout = QHBoxLayout()
-        image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
-        image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
-        image_layer_layout.addWidget(QLabel("Image Layer:"))
-        self.image_layer_with_phasor_features_combobox = QComboBox()
-        self.image_layer_with_phasor_features_combobox.setMaximumHeight(
-            25
-        )  # Set smaller height
-        image_layer_layout.addWidget(
-            self.image_layer_with_phasor_features_combobox, 1
-        )  # Add stretch factor of 1
+        # Create improved layer selector
+        self.layer_selector = PhasorLayerSelector(self.viewer)
+        self.layer_selector.layers_changed.connect(self.on_layers_selection_changed)
+        controls_container.layout().addWidget(self.layer_selector)
 
-        image_layer_widget = QWidget()
-        image_layer_widget.setLayout(image_layer_layout)
-        controls_container.layout().addWidget(image_layer_widget)
-
-        # Add harmonic spinbox below image layer combobox
+        # Add harmonic spinbox below image layer comboboxes
         harmonic_layout = QHBoxLayout()
         harmonic_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
         harmonic_layout.setSpacing(5)  # Reduce spacing between widgets
@@ -202,18 +307,11 @@ class PlotterWidget(QWidget):
         self._create_lifetime_tab()
         self._create_fret_tab()
 
-        # Connect napari signals when new layer is inseted or removed
+        # Connect napari signals when new layer is inserted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
 
-        # Connect callbacks
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
-        )
-        # Update all frequency widgets from layer metadata if layer changes
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self._sync_frequency_inputs_from_metadata
-        )
+        # Connect callbacks for harmonic and plot settings
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
             self.on_toggle_semi_circle
         )
@@ -274,11 +372,46 @@ class PlotterWidget(QWidget):
         self._redefine_axes_limits()
         self._update_plot_bg_color()
 
-        # Populate labels layer combobox
+        # Populate labels layer choices
         self.reset_layer_choices()
 
         # Connect tab change signal
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+    def on_layers_selection_changed(self):
+        """Handle changes to layer selection."""
+        if getattr(self, "_in_on_layers_selection_changed", False):
+            return
+        self._in_on_layers_selection_changed = True
+        
+        try:
+            # Get selected layers
+            self._labels_layers_with_phasor_features = self.layer_selector.get_selected_layers()
+            
+            # Update max harmonic across all selected layers
+            max_harmonic = 1
+            for phasor_layer in self._labels_layers_with_phasor_features:
+                if phasor_layer.features is not None:
+                    layer_max_harmonic = phasor_layer.features["harmonic"].max()
+                    max_harmonic = max(max_harmonic, layer_max_harmonic)
+            
+            self.harmonic_spinbox.setMaximum(max_harmonic)
+            
+            # Update other tabs
+            if hasattr(self, 'filter_tab'):
+                self.filter_tab.on_labels_layer_with_phasor_features_changed()
+
+            # Update calibration button state when layer changes
+            if hasattr(self, 'calibration_tab'):
+                self.calibration_tab._update_button_state()
+
+            # Sync frequency inputs from first selected layer
+            self._sync_frequency_inputs_from_metadata()
+
+            self.plot()
+
+        finally:
+            self._in_on_layers_selection_changed = False
 
     def _on_tab_changed(self, index):
         """Handle tab change events to show/hide tab-specific lines."""
@@ -297,12 +430,6 @@ class PlotterWidget(QWidget):
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
         # Hide components tab artists
-        if hasattr(self, 'components_tab'):
-            self._set_components_visibility(False)
-
-        # Hide other tabs' artists (add similar methods for other tabs)
-        if hasattr(self, 'fret_tab'):
-            self._set_fret_visibility(False)
         if hasattr(self, 'components_tab'):
             self._set_components_visibility(False)
 
@@ -688,17 +815,18 @@ class PlotterWidget(QWidget):
             self.semi_circle_plot_artist_list.append(label)
 
     def _get_frequency_from_layer(self):
-        """Get frequency from the current layer's metadata."""
-        layer_name = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if layer_name == "":
+        """Get frequency from the first selected layer's metadata."""
+        selected_layers = self.layer_selector.get_selected_layer_names()
+        if not selected_layers:
             return None
-        layer = self.viewer.layers[layer_name]
-        if "settings" in layer.metadata:
-            settings = layer.metadata["settings"]
-            if "frequency" in settings:
-                return settings["frequency"]
+            
+        layer_name = selected_layers[0]
+        if layer_name in self.viewer.layers:
+            layer = self.viewer.layers[layer_name]
+            if "settings" in layer.metadata:
+                settings = layer.metadata["settings"]
+                if "frequency" in settings:
+                    return settings["frequency"]
 
         return None
 
@@ -715,23 +843,70 @@ class PlotterWidget(QWidget):
         """
         try:
             freq_val = float(value)
-            layer_name = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-            if layer_name:
-                layer = self.viewer.layers[layer_name]
-                update_frequency_in_metadata(layer, freq_val)
+            # Update frequency in all selected layers
+            selected_layer_names = self.layer_selector.get_selected_layer_names()
+            for layer_name in selected_layer_names:
+                if layer_name in self.viewer.layers:
+                    layer = self.viewer.layers[layer_name]
+                    update_frequency_in_metadata(layer, freq_val)
         except Exception:
             pass
 
-        self.calibration_tab.calibration_widget.frequency_input.setText(value)
-        self.lifetime_tab.frequency_input.setText(value)
-        self.fret_tab.frequency_input.setText(value)
-        self.components_tab._update_lifetime_inputs_visibility()
+        # Update frequency input widgets in tabs
+        if hasattr(self, 'calibration_tab'):
+            self.calibration_tab.calibration_widget.frequency_input.setText(value)
+        if hasattr(self, 'lifetime_tab'):
+            self.lifetime_tab.frequency_input.setText(value)
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab.frequency_input.setText(value)
+        if hasattr(self, 'components_tab'):
+            self.components_tab._update_lifetime_inputs_visibility()
 
         if self.toggle_semi_circle:
             self._update_semi_circle_plot(self.canvas_widget.axes)
             self.canvas_widget.figure.canvas.draw_idle()
+
+    # Add property for backward compatibility
+    @property
+    def image_layer_with_phasor_features_combobox(self):
+        """Get a mock combobox-like object for backward compatibility."""
+        class MockComboBox:
+            def __init__(self, layer_selector):
+                self.layer_selector = layer_selector
+                # Create mock signals that forward to the layer selector's signal
+                self.currentTextChanged = layer_selector.layers_changed
+                self.currentIndexChanged = layer_selector.layers_changed
+            
+            def currentText(self):
+                selected_names = self.layer_selector.get_selected_layer_names()
+                return selected_names[0] if selected_names else ""
+            
+            def setCurrentText(self, text):
+                # For compatibility, this could select/deselect layers
+                pass
+                
+            def blockSignals(self, block):
+                # Mock method for compatibility
+                pass
+                
+            def clear(self):
+                # Mock method for compatibility
+                pass
+                
+            def addItems(self, items):
+                # Mock method for compatibility
+                pass
+                
+            def findText(self, text):
+                # Mock method for compatibility
+                selected_names = self.layer_selector.get_selected_layer_names()
+                return 0 if text in selected_names else -1
+                
+            def setCurrentIndex(self, index):
+                # Mock method for compatibility
+                pass
+        
+        return MockComboBox(self.layer_selector)
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
@@ -942,143 +1117,80 @@ class PlotterWidget(QWidget):
             pass
 
     def reset_layer_choices(self):
-        """Reset the image layer with phasor features combobox choices."""
-        # Prevent recursive calls
-        if getattr(self, '_resetting_layer_choices', False):
-            return
-
-        self._resetting_layer_choices = True
-
-        try:
-            # Store current selection
-            current_text = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-
-            # Temporarily disconnect signals to prevent cascading updates
-            self.image_layer_with_phasor_features_combobox.blockSignals(True)
-
-            # Clear and repopulate
-            self.image_layer_with_phasor_features_combobox.clear()
-
-            layer_names = [
-                layer.name
-                for layer in self.viewer.layers
-                if isinstance(layer, Image)
-                and "phasor_features_labels_layer" in layer.metadata.keys()
-            ]
-
-            self.image_layer_with_phasor_features_combobox.addItems(
-                layer_names
-            )
-
-            # Restore selection if it still exists
-            if current_text in layer_names:
-                index = (
-                    self.image_layer_with_phasor_features_combobox.findText(
-                        current_text
-                    )
-                )
-                if index >= 0:
-                    self.image_layer_with_phasor_features_combobox.setCurrentIndex(
-                        index
-                    )
-
-            # Re-enable signals
-            self.image_layer_with_phasor_features_combobox.blockSignals(False)
-
-            # Connect layer name change events (disconnect first to avoid duplicates)
-            for layer_name in layer_names:
-                layer = self.viewer.layers[layer_name]
-                try:
-                    layer.events.name.disconnect(self.reset_layer_choices)
-                except (TypeError, ValueError):
-                    pass  # Not connected, ignore
-                layer.events.name.connect(self.reset_layer_choices)
-
-            # Trigger updates only if selection changed
-            new_text = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-            if new_text != current_text:
-                self.on_labels_layer_with_phasor_features_changed()
-                self._sync_frequency_inputs_from_metadata()
-
-        finally:
-            self._resetting_layer_choices = False
+        """Reset layer choices in the layer selector."""
+        # The layer selector widget handles its own updates automatically
+        # This method is kept for backward compatibility
+        pass
 
     def on_labels_layer_with_phasor_features_changed(self):
-        """Handle changes to the labels layer with phasor features."""
-        if getattr(
-            self, "_in_on_labels_layer_with_phasor_features_changed", False
-        ):
-            return
-        self._in_on_labels_layer_with_phasor_features_changed = True
-        try:
-            labels_layer_name = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-            if labels_layer_name == "":
-                self._labels_layer_with_phasor_features = None
-                return
-            layer_metadata = self.viewer.layers[labels_layer_name].metadata
-            self._labels_layer_with_phasor_features = layer_metadata[
-                "phasor_features_labels_layer"
-            ]
-            self.harmonic_spinbox.setMaximum(
-                self._labels_layer_with_phasor_features.features[
-                    "harmonic"
-                ].max()
-            )
-            # Update filter widget when layer changes
-            if hasattr(self, 'filter_tab'):
-                self.filter_tab.on_labels_layer_with_phasor_features_changed()
-
-            # Update calibration button state when layer changes
-            if hasattr(self, 'calibration_tab'):
-                self.calibration_tab._update_button_state()
-
-            self.plot()
-
-        finally:
-            self._in_on_labels_layer_with_phasor_features_changed = False
+        """Handle changes to labels layers (kept for backward compatibility)."""
+        # This functionality is now handled by on_layers_selection_changed
+        self.on_layers_selection_changed()
 
     def get_features(self):
-        """Get the G and S features for the selected harmonic and selection id.
+        """Get the combined G and S features from all selected layers for the selected harmonic.
 
         Returns
         -------
         x_data : np.ndarray
-            The G feature data.
+            The combined G feature data from all layers.
         y_data : np.ndarray
-            The S feature data.
+            The combined S feature data from all layers.
         selection_data : np.ndarray
-            The selection data.
+            The combined selection data from all layers.
         """
-        if self._labels_layer_with_phasor_features is None:
-            return None
-        if self._labels_layer_with_phasor_features.features is None:
+        if not self._labels_layers_with_phasor_features:
             return None
 
-        table = self._labels_layer_with_phasor_features.features
-        x_data = table['G'][table['harmonic'] == self.harmonic].values
-        y_data = table['S'][table['harmonic'] == self.harmonic].values
-        mask = np.isnan(x_data) & np.isnan(y_data)
-        x_data = x_data[~mask]
-        y_data = y_data[~mask]
+        all_x_data = []
+        all_y_data = []
+        all_selection_data = []
 
-        if (
-            self.selection_tab.selection_id is None
-            or self.selection_tab.selection_id == ""
-            or self.selection_tab.selection_id not in table.columns
-        ):
-            return x_data, y_data, None
+        for phasor_layer in self._labels_layers_with_phasor_features:
+            if phasor_layer.features is None:
+                continue
+
+            table = phasor_layer.features
+            x_data = table['G'][table['harmonic'] == self.harmonic].values
+            y_data = table['S'][table['harmonic'] == self.harmonic].values
+            
+            # Remove NaN values
+            mask = np.isnan(x_data) | np.isnan(y_data)
+            x_data = x_data[~mask]
+            y_data = y_data[~mask]
+            
+            if len(x_data) > 0 and len(y_data) > 0:
+                all_x_data.append(x_data)
+                all_y_data.append(y_data)
+                
+                # Handle selection data
+                if (
+                    self.selection_tab.selection_id is not None
+                    and self.selection_tab.selection_id != ""
+                    and self.selection_tab.selection_id in table.columns
+                ):
+                    selection_data = table[self.selection_tab.selection_id][
+                        table['harmonic'] == self.harmonic
+                    ].values
+                    selection_data = selection_data[~mask]
+                    all_selection_data.append(selection_data)
+                else:
+                    # Add zeros for no selection
+                    all_selection_data.append(np.zeros_like(x_data))
+
+        if not all_x_data:
+            return None
+
+        # Combine all data
+        combined_x = np.concatenate(all_x_data)
+        combined_y = np.concatenate(all_y_data)
+        
+        if all_selection_data and any(len(sel) > 0 for sel in all_selection_data):
+            combined_selection = np.concatenate(all_selection_data)
         else:
-            selection_data = table[self.selection_tab.selection_id][
-                table['harmonic'] == self.harmonic
-            ].values
-            selection_data = selection_data[~mask]
-            return x_data, y_data, selection_data
+            combined_selection = None
+
+        return combined_x, combined_y, combined_selection
 
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
