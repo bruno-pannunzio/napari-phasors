@@ -5,7 +5,7 @@ from napari.layers import Labels
 from napari.utils import DirectLabelColormap, notifications
 from qtpy import uic
 from qtpy.QtWidgets import QVBoxLayout, QWidget
-from skimage.util import map_array
+from ._utils import map_array
 
 from ._utils import colormap_to_dict
 

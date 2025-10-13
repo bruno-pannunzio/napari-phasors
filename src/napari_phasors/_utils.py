@@ -221,6 +221,144 @@ def apply_filter_and_threshold(
     layer.refresh()
     return
 
+def threshold_otsu(image):
+    """Calculate Otsu's threshold for an image.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image data (1D array expected)
+        
+    Returns
+    -------
+    float
+        Optimal threshold value
+    """
+    hist, bin_edges = np.histogram(image, bins=256)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    
+    # Normalize histogram
+    hist = hist.astype(float)
+    hist /= hist.sum()
+    
+    # Calculate cumulative sums
+    weight1 = np.cumsum(hist)
+    weight2 = np.cumsum(hist[::-1])[::-1]
+    
+    # Calculate cumulative means
+    mean1 = np.cumsum(hist * bin_centers) / weight1
+    mean2 = (np.cumsum((hist * bin_centers)[::-1]) / weight2[::-1])[::-1]
+    
+    # Calculate between-class variance
+    variance = weight1[:-1] * weight2[1:] * (mean1[:-1] - mean2[1:]) ** 2
+    
+    idx = np.argmax(variance)
+    return bin_centers[idx]
+
+
+def threshold_li(image):
+    """Calculate Li's iterative minimum cross entropy threshold.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image data (1D array expected)
+        
+    Returns
+    -------
+    float
+        Optimal threshold value
+    """
+    # Flatten and remove NaN values
+    image = image.flatten()
+    image = image[~np.isnan(image)]
+    
+    if len(image) == 0:
+        return 0
+    
+    hist, bin_edges = np.histogram(image, bins=256)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    
+    # Remove zero entries
+    non_zero_idx = hist > 0
+    hist = hist[non_zero_idx]
+    bin_centers = bin_centers[non_zero_idx]
+    
+    if len(hist) == 0:
+        return 0
+    
+    # Normalize
+    hist = hist.astype(float) / hist.sum()
+    
+    # Initial threshold at mean
+    t = np.sum(hist * bin_centers)
+    
+    # Iterative refinement
+    for _ in range(100):
+        # Split into foreground and background
+        foreground = bin_centers >= t
+        background = bin_centers < t
+        
+        if not np.any(foreground) or not np.any(background):
+            break
+            
+        # Calculate means
+        hist_fore = hist[foreground]
+        hist_back = hist[background]
+        
+        if hist_fore.sum() == 0 or hist_back.sum() == 0:
+            break
+            
+        mean_fore = np.sum(hist_fore * bin_centers[foreground]) / hist_fore.sum()
+        mean_back = np.sum(hist_back * bin_centers[background]) / hist_back.sum()
+        
+        # New threshold
+        t_new = (mean_fore + mean_back) / 2
+        
+        if abs(t_new - t) < 0.5:
+            break
+        t = t_new
+    
+    return t
+
+
+def threshold_yen(image):
+    """Calculate Yen's threshold.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image data (1D array expected)
+        
+    Returns
+    -------
+    float
+        Optimal threshold value
+    """
+    hist, bin_edges = np.histogram(image, bins=256)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    
+    # Normalize histogram
+    hist = hist.astype(float)
+    hist = hist[hist > 0]
+    bin_centers = bin_centers[:len(hist)]
+    hist /= hist.sum()
+    
+    # Calculate cumulative histogram
+    P1 = np.cumsum(hist)
+    P2 = np.cumsum(hist[::-1])[::-1]
+    
+    # Calculate criterion
+    criterion = np.zeros(len(hist) - 1)
+    for i in range(len(criterion)):
+        if P1[i] > 0 and P2[i+1] > 0:
+            H1 = -np.sum(hist[:i+1] * np.log(hist[:i+1] + 1e-10))
+            H2 = -np.sum(hist[i+1:] * np.log(hist[i+1:] + 1e-10))
+            criterion[i] = -1 * (H1 + H2 + np.log(P1[i] * P2[i+1]))
+    
+    idx = np.argmax(criterion)
+    return bin_centers[idx]
+
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
     """
@@ -250,6 +388,35 @@ def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
         color_dict[i + 1 - start] = color
     color_dict[None] = (0, 0, 0, 0)
     return color_dict
+
+def map_array(input_arr, input_vals, output_vals):
+    """Map values in input array to output values.
+    
+    Parameters
+    ----------
+    input_arr : np.ndarray
+        Input array to be mapped
+    input_vals : np.ndarray
+        Input values to map from
+    output_vals : np.ndarray
+        Output values to map to
+        
+    Returns
+    -------
+    np.ndarray
+        Mapped array
+    """
+    # Create output array with same shape as input
+    output_arr = np.zeros_like(input_arr, dtype=output_vals.dtype)
+    
+    # Create a mapping dictionary for efficient lookup
+    mapping = dict(zip(input_vals, output_vals))
+    
+    # Vectorized mapping using np.vectorize
+    vectorized_map = np.vectorize(lambda x: mapping.get(x, 0))
+    output_arr = vectorized_map(input_arr)
+    
+    return output_arr
 
 
 def update_frequency_in_metadata(

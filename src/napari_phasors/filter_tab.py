@@ -20,9 +20,8 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage.filters import threshold_li, threshold_otsu, threshold_yen
 
-from ._utils import apply_filter_and_threshold, validate_harmonics_for_wavelet
+from ._utils import apply_filter_and_threshold, validate_harmonics_for_wavelet,threshold_li, threshold_otsu, threshold_yen
 
 
 class FilterWidget(QWidget):

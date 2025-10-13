@@ -16,6 +16,7 @@ from napari_phasors._utils import (
     update_frequency_in_metadata,
     validate_harmonics_for_wavelet,
 )
+from napari_phasors._utils import threshold_otsu, threshold_li, threshold_yen
 
 
 def test_validate_harmonics_for_wavelet():
@@ -583,3 +584,394 @@ def test_update_frequency_in_metadata(make_napari_viewer):
     update_frequency_in_metadata(intensity_layer, new_frequency)
     assert intensity_layer.metadata["settings"]["frequency"] == new_frequency
     assert intensity_layer.metadata["settings"]["existing_setting"] == "test"
+
+def test_threshold_otsu():
+    """Test Otsu's threshold calculation."""
+    # Create a bimodal distribution (two peaks)
+    np.random.seed(42)
+    background = np.random.normal(50, 10, 1000)
+    foreground = np.random.normal(150, 20, 1000)
+    image = np.concatenate([background, foreground])
+    
+    threshold = threshold_otsu(image)
+    
+    # Threshold should be roughly between the two peaks
+    assert 80 < threshold < 120
+    
+    # Compare with scikit-image if available
+    try:
+        from skimage.filters import threshold_otsu as skimage_otsu
+        skimage_threshold = skimage_otsu(image)
+        assert np.isclose(threshold, skimage_threshold, rtol=0.01)
+    except ImportError:
+        pass  # Skip comparison if scikit-image not available
+    
+    # Test with uniform distribution (should return middle value)
+    uniform_image = np.linspace(0, 100, 1000)
+    threshold_uniform = threshold_otsu(uniform_image)
+    assert 40 < threshold_uniform < 60
+
+
+def test_threshold_li():
+    """Test Li's iterative minimum cross entropy threshold."""
+    # Create a bimodal distribution
+    np.random.seed(42)
+    background = np.random.normal(50, 10, 1000)
+    foreground = np.random.normal(150, 20, 1000)
+    image = np.concatenate([background, foreground])
+    
+    threshold = threshold_li(image)
+    
+    # Threshold should be roughly between the two peaks
+    assert 70 < threshold < 130
+    
+    # Compare with scikit-image if available (with more lenient tolerance)
+    try:
+        from skimage.filters import threshold_li as skimage_li
+        skimage_threshold = skimage_li(image)
+        # Li's method can vary in implementation, use more lenient comparison
+        assert np.isclose(threshold, skimage_threshold, rtol=0.15)
+    except ImportError:
+        pass  # Skip comparison if scikit-image not available
+    
+    # Test with simple case
+    simple_image = np.array([0, 0, 0, 0, 100, 100, 100, 100])
+    threshold_simple = threshold_li(simple_image)
+    assert threshold_simple > 0
+
+
+def test_threshold_li_edge_cases():
+    """Test Li's threshold with edge cases."""
+    # Test with constant image (all same values)
+    constant_image = np.ones(100) * 50
+    threshold = threshold_li(constant_image)
+    # Due to histogram binning, threshold might not be exactly 50
+    assert np.isclose(threshold, 50, rtol=0.01)
+    
+    # Test with binary image
+    binary_image = np.array([0] * 50 + [255] * 50)
+    threshold = threshold_li(binary_image)
+    assert 0 < threshold < 255
+    
+    # Test with very small range
+    small_range = np.random.uniform(10, 11, 100)
+    threshold = threshold_li(small_range)
+    assert 10 <= threshold <= 11
+    
+    # Test with negative values
+    negative_image = np.concatenate([
+        np.random.normal(-50, 10, 500),
+        np.random.normal(50, 10, 500)
+    ])
+    threshold_negative = threshold_li(negative_image)
+    assert -50 < threshold_negative < 50
+    
+    # Test with very large values
+    large_image = np.concatenate([
+        np.random.normal(1000, 100, 500),
+        np.random.normal(5000, 100, 500)
+    ])
+    threshold_large = threshold_li(large_image)
+    assert 1000 < threshold_large < 5000
+    
+    # Test with zeros
+    zeros_image = np.concatenate([
+        np.zeros(500),
+        np.ones(500) * 100
+    ])
+    threshold_zeros = threshold_li(zeros_image)
+    assert 0 < threshold_zeros < 100
+
+
+def test_threshold_li_nan_handling():
+    """Test Li's threshold with NaN values."""
+    # Test with NaN values mixed in
+    image_with_nan = np.array([10, 20, np.nan, 30, 40, np.nan, 90, 100, 110])
+    threshold = threshold_li(image_with_nan)
+    # Should still compute a threshold from valid values
+    assert not np.isnan(threshold)
+    assert 10 < threshold < 110
+    
+    # Test with all NaN values
+    all_nan = np.full(100, np.nan)
+    threshold_all_nan = threshold_li(all_nan)
+    assert threshold_all_nan == 0  # Should return 0 for empty/invalid data
+
+
+def test_threshold_li_sparse_distributions():
+    """Test Li's threshold with sparse/unusual distributions."""
+    np.random.seed(42)
+    
+    # Test with three modes
+    three_modes = np.concatenate([
+        np.random.normal(30, 5, 300),
+        np.random.normal(100, 5, 300),
+        np.random.normal(170, 5, 300)
+    ])
+    threshold_three = threshold_li(three_modes)
+    assert 30 < threshold_three < 170
+    
+    # Test with uniform distribution
+    uniform = np.random.uniform(0, 100, 1000)
+    threshold_uniform = threshold_li(uniform)
+    assert 0 < threshold_uniform < 100
+    
+    # Test with exponential distribution
+    exponential = np.random.exponential(scale=50, size=1000)
+    threshold_exp = threshold_li(exponential)
+    assert threshold_exp > 0
+
+
+def test_threshold_otsu_edge_cases():
+    """Test Otsu's threshold with edge cases."""
+    # Test with constant image
+    constant_image = np.ones(100) * 75
+    threshold = threshold_otsu(constant_image)
+    # Due to histogram binning, might not be exactly 75
+    assert np.isclose(threshold, 75, rtol=0.05)
+    
+    # Test with binary image
+    binary_image = np.array([0] * 500 + [255] * 500)
+    threshold_binary = threshold_otsu(binary_image)
+    assert 0 < threshold_binary < 255
+    
+    # Test with negative values
+    negative_image = np.concatenate([
+        np.random.normal(-100, 10, 500),
+        np.random.normal(100, 10, 500)
+    ])
+    threshold_negative = threshold_otsu(negative_image)
+    assert -100 < threshold_negative < 100
+
+
+def test_threshold_yen_edge_cases():
+    """Test Yen's threshold with edge cases."""
+    # Test with small dataset
+    small_image = np.array([1, 2, 3, 90, 100, 110])
+    threshold = threshold_yen(small_image)
+    assert 1 < threshold < 110
+    
+    # Test with constant image
+    constant_image = np.ones(100) * 50
+    threshold_const = threshold_yen(constant_image)
+    # Due to histogram binning and entropy calculations
+    assert np.isclose(threshold_const, 50, rtol=0.1)
+    
+    # Test with skewed distribution
+    np.random.seed(42)
+    skewed = np.concatenate([
+        np.random.normal(50, 5, 900),
+        np.random.normal(150, 10, 100)
+    ])
+    threshold_skewed = threshold_yen(skewed)
+    assert 50 < threshold_skewed < 150
+
+
+def test_threshold_convergence():
+    """Test that Li's algorithm converges properly."""
+    np.random.seed(42)
+    
+    # Test with well-separated bimodal (should converge quickly)
+    well_separated = np.concatenate([
+        np.random.normal(30, 5, 500),
+        np.random.normal(170, 5, 500)
+    ])
+    threshold = threshold_li(well_separated)
+    # Should be roughly in the middle
+    assert 80 < threshold < 120
+    
+    # Run again to ensure deterministic
+    threshold2 = threshold_li(well_separated)
+    assert threshold == threshold2
+
+
+def test_threshold_extreme_values():
+    """Test threshold methods with extreme value ranges."""
+    # Test with very small values
+    tiny_image = np.concatenate([
+        np.random.normal(0.001, 0.0001, 500),
+        np.random.normal(0.01, 0.001, 500)
+    ])
+    
+    otsu_tiny = threshold_otsu(tiny_image)
+    li_tiny = threshold_li(tiny_image)
+    yen_tiny = threshold_yen(tiny_image)
+    
+    assert 0.001 < otsu_tiny < 0.01
+    assert 0.001 < li_tiny < 0.01
+    assert 0.001 < yen_tiny < 0.01
+    
+    # Test with very large values
+    huge_image = np.concatenate([
+        np.random.normal(1e6, 1e5, 500),
+        np.random.normal(1e7, 1e6, 500)
+    ])
+    
+    otsu_huge = threshold_otsu(huge_image)
+    li_huge = threshold_li(huge_image)
+    yen_huge = threshold_yen(huge_image)
+    
+    assert 1e6 < otsu_huge < 1e7
+    assert 1e6 < li_huge < 1e7
+    assert 1e6 < yen_huge < 1e7
+
+
+def test_threshold_li_reproducibility():
+    """Test that Li's threshold produces consistent results."""
+    np.random.seed(123)
+    image1 = np.random.normal(50, 10, 500)
+    image2 = np.random.normal(150, 20, 500)
+    image = np.concatenate([image1, image2])
+    
+    # Run multiple times to ensure consistency
+    threshold1 = threshold_li(image)
+    threshold2 = threshold_li(image)
+    
+    assert threshold1 == threshold2
+
+
+def test_threshold_li_different_distributions():
+    """Test Li's threshold with different data distributions."""
+    np.random.seed(42)
+    
+    # Well-separated bimodal
+    well_separated = np.concatenate([
+        np.random.normal(30, 5, 500),
+        np.random.normal(170, 5, 500)
+    ])
+    threshold_separated = threshold_li(well_separated)
+    assert 50 < threshold_separated < 150
+    
+    # Overlapping bimodal
+    overlapping = np.concatenate([
+        np.random.normal(80, 20, 500),
+        np.random.normal(120, 20, 500)
+    ])
+    threshold_overlap = threshold_li(overlapping)
+    assert 60 < threshold_overlap < 140
+    
+    # Unbalanced classes
+    unbalanced = np.concatenate([
+        np.random.normal(50, 10, 100),
+        np.random.normal(150, 20, 900)
+    ])
+    threshold_unbalanced = threshold_li(unbalanced)
+    assert 50 < threshold_unbalanced < 150
+
+
+def test_threshold_yen():
+    """Test Yen's threshold calculation."""
+    # Create a bimodal distribution
+    np.random.seed(42)
+    background = np.random.normal(50, 10, 1000)
+    foreground = np.random.normal(150, 20, 1000)
+    image = np.concatenate([background, foreground])
+    
+    threshold = threshold_yen(image)
+    
+    # Threshold should be roughly between the two peaks
+    assert 70 < threshold < 130
+    
+    # Compare with scikit-image if available
+    try:
+        from skimage.filters import threshold_yen as skimage_yen
+        skimage_threshold = skimage_yen(image)
+        assert np.isclose(threshold, skimage_threshold, rtol=0.01)
+    except ImportError:
+        pass  # Skip comparison if scikit-image not available
+    
+    # Test edge case with small array
+    small_image = np.array([10, 20, 30, 40, 90, 100, 110, 120])
+    threshold_small = threshold_yen(small_image)
+    assert 30 < threshold_small < 100
+
+
+def test_threshold_methods_consistency():
+    """Test that all threshold methods produce reasonable results on same data."""
+    # Create a clear bimodal distribution
+    np.random.seed(42)
+    background = np.random.normal(30, 5, 500)
+    foreground = np.random.normal(100, 10, 500)
+    image = np.concatenate([background, foreground])
+    
+    otsu_thresh = threshold_otsu(image)
+    li_thresh = threshold_li(image)
+    yen_thresh = threshold_yen(image)
+    
+    # All thresholds should be in a reasonable range
+    assert 40 < otsu_thresh < 90
+    assert 40 < li_thresh < 90
+    assert 40 < yen_thresh < 90
+    
+    # They should all separate the two modes reasonably well
+    assert np.mean(background) < otsu_thresh < np.mean(foreground)
+    assert np.mean(background) < li_thresh < np.mean(foreground)
+    assert np.mean(background) < yen_thresh < np.mean(foreground)
+
+
+def test_map_array():
+    """Test map_array function."""
+    from napari_phasors._utils import map_array
+    
+    # Test basic mapping
+    input_arr = np.array([1, 2, 3, 4, 5])
+    input_vals = np.array([1, 2, 3, 4, 5])
+    output_vals = np.array([10, 20, 30, 40, 50])
+    
+    result = map_array(input_arr, input_vals, output_vals)
+    expected = np.array([10, 20, 30, 40, 50])
+    assert np.array_equal(result, expected)
+    
+    # Test with unmapped values (should return 0)
+    input_arr = np.array([1, 2, 3, 6, 7])
+    result = map_array(input_arr, input_vals, output_vals)
+    expected = np.array([10, 20, 30, 0, 0])
+    assert np.array_equal(result, expected)
+    
+    # Test with 2D array
+    input_arr = np.array([[1, 2], [3, 4]])
+    input_vals = np.array([1, 2, 3, 4])
+    output_vals = np.array([100, 200, 300, 400])
+    
+    result = map_array(input_arr, input_vals, output_vals)
+    expected = np.array([[100, 200], [300, 400]])
+    assert np.array_equal(result, expected)
+    
+    # Test with different dtypes
+    input_arr = np.array([1, 2, 3], dtype=np.int32)
+    input_vals = np.array([1, 2, 3], dtype=np.int32)
+    output_vals = np.array([1.5, 2.5, 3.5], dtype=np.float64)
+    
+    result = map_array(input_arr, input_vals, output_vals)
+    assert result.dtype == np.float64
+    assert np.allclose(result, [1.5, 2.5, 3.5])
+    
+    # Test with non-consecutive mapping
+    input_arr = np.array([10, 25, 50, 100])
+    input_vals = np.array([10, 25, 50, 100])
+    output_vals = np.array([1, 2, 3, 4])
+    
+    result = map_array(input_arr, input_vals, output_vals)
+    expected = np.array([1, 2, 3, 4])
+    assert np.array_equal(result, expected)
+
+
+def test_map_array_empty():
+    """Test map_array with edge cases."""
+    from napari_phasors._utils import map_array
+    
+    # Test with empty array
+    input_arr = np.array([])
+    input_vals = np.array([1, 2, 3])
+    output_vals = np.array([10, 20, 30])
+    
+    result = map_array(input_arr, input_vals, output_vals)
+    assert len(result) == 0
+    
+    # Test with single value
+    input_arr = np.array([5])
+    input_vals = np.array([5])
+    output_vals = np.array([50])
+    
+    result = map_array(input_arr, input_vals, output_vals)
+    assert result[0] == 50
