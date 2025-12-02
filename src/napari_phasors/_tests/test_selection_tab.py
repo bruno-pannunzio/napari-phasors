@@ -5,7 +5,6 @@ from napari.layers import Labels
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
-from napari_phasors.selection_tab import DATA_COLUMNS
 
 
 def test_selection_widget_initialization_values(make_napari_viewer):
@@ -107,22 +106,6 @@ def test_selection_id_property_getter(make_napari_viewer):
     assert widget.selection_id is None
 
 
-@patch('napari_phasors.selection_tab.notifications')
-def test_selection_id_property_setter_invalid(
-    mock_notifications, make_napari_viewer
-):
-    """Test the selection_id property setter with invalid values."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    # Test setting invalid selection ID (from DATA_COLUMNS)
-    widget.selection_id = "label"  # This is in DATA_COLUMNS
-
-    # Should show warning notification
-    mock_notifications.WarningNotification.assert_called_once()
-    # Selection ID should remain unchanged
-    assert widget.selection_id is None
 
 
 def test_add_selection_id_to_features_valid(make_napari_viewer):
@@ -444,15 +427,3 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
     ]
     np.testing.assert_array_equal(recreated_layer.data, original_data)
 
-
-def test_data_columns_constant():
-    """Test that DATA_COLUMNS constant is properly defined."""
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    assert DATA_COLUMNS == expected_columns

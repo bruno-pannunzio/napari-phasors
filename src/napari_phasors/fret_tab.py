@@ -712,34 +712,35 @@ class FretWidget(QWidget):
 
         try:
             background_layer = self.viewer.layers[background_layer_name]
-            background_phasor_layer = background_layer.metadata[
-                "phasor_features_labels_layer"
-            ]
-        except (KeyError, AttributeError):
+            # Retrieve arrays from metadata
+            g_array = background_layer.metadata.get("G")
+            s_array = background_layer.metadata.get("S")
+            harmonics = background_layer.metadata.get("harmonics")
+            mean = background_layer.metadata.get("original_mean")
+            
+            if g_array is None or s_array is None or harmonics is None:
+                raise ValueError("Missing phasor data")
+                
+        except (KeyError, AttributeError, ValueError):
             if self.bg_source_selector.currentIndex() == 1:
                 self.background_position_label.setText("Background position:")
             return
 
-        phasor_data = background_phasor_layer.features
-
-        if 'harmonic' not in phasor_data.columns:
-            if self.bg_source_selector.currentIndex() == 1:
-                self.background_position_label.setText("Background position:")
-            return
-
-        unique_harmonics = phasor_data['harmonic'].unique()
+        unique_harmonics = np.atleast_1d(harmonics)
 
         for harmonic in unique_harmonics:
-            harmonic_mask = phasor_data['harmonic'] == harmonic
-            real = phasor_data.loc[harmonic_mask, 'G']
-            imag = phasor_data.loc[harmonic_mask, 'S']
-
-            if len(real) == 0 or len(imag) == 0:
-                continue
-
             try:
+                harmonic_idx = np.where(harmonics == harmonic)[0][0]
+                
+                if g_array.ndim == 3:
+                    real = g_array[harmonic_idx]
+                    imag = s_array[harmonic_idx]
+                else:
+                    real = g_array
+                    imag = s_array
+
                 _, center_real, center_imag = phasor_center(
-                    background_layer.data.flatten(), real, imag
+                    mean, real, imag
                 )
 
                 self.background_positions_by_harmonic[harmonic] = {
@@ -801,34 +802,40 @@ class FretWidget(QWidget):
 
         try:
             donor_layer = self.viewer.layers[donor_layer_name]
-            donor_phasor_layer = donor_layer.metadata[
-                "phasor_features_labels_layer"
-            ]
-        except (KeyError, AttributeError):
-            if self.donor_source_selector.currentIndex() == 1:
-                self.donor_label.setText("Donor lifetime (ns):")
-            return
-
-        phasor_data = donor_phasor_layer.features
-
-        if "harmonic" not in phasor_data.columns:
+            # Retrieve arrays from metadata
+            g_array = donor_layer.metadata.get("G")
+            s_array = donor_layer.metadata.get("S")
+            harmonics = donor_layer.metadata.get("harmonics")
+            mean = donor_layer.metadata.get("original_mean")
+            
+            if g_array is None or s_array is None or harmonics is None:
+                raise ValueError("Missing phasor data")
+                
+        except (KeyError, AttributeError, ValueError):
             if self.donor_source_selector.currentIndex() == 1:
                 self.donor_label.setText("Donor lifetime (ns):")
             return
 
         current_harmonic = self.parent_widget.harmonic
-        harmonic_mask = phasor_data['harmonic'] == current_harmonic
-        real = phasor_data.loc[harmonic_mask, 'G']
-        imag = phasor_data.loc[harmonic_mask, 'S']
-
-        if len(real) == 0 or len(imag) == 0:
+        
+        try:
+            harmonic_idx = np.where(harmonics == current_harmonic)[0][0]
+            
+            if g_array.ndim == 3:
+                real = g_array[harmonic_idx]
+                imag = s_array[harmonic_idx]
+            else:
+                real = g_array
+                imag = s_array
+                
+        except IndexError:
             if self.donor_source_selector.currentIndex() == 1:
                 self.donor_label.setText("Donor lifetime (ns):")
             return
 
         try:
             _, center_real, center_imag = phasor_center(
-                donor_layer.data.flatten(), real, imag
+                mean, real, imag
             )
 
             if not self.frequency_input.text():
@@ -885,6 +892,11 @@ class FretWidget(QWidget):
                 )
 
             self.plot_donor_trajectory()
+
+        except Exception as e:
+            show_error(f"Error calculating donor lifetime: {str(e)}")
+            if self.donor_source_selector.currentIndex() == 1:
+                self.donor_label.setText("Donor lifetime (ns): Error")
 
         except Exception as e:
             show_error(f"Error calculating donor lifetime: {str(e)}")
@@ -1487,8 +1499,11 @@ class FretWidget(QWidget):
                 "Enter valid numeric values for donor lifetime and frequency."
             )
             return
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        
+        # Check for valid data using parent widget helper
+        if not self.parent_widget.has_phasor_data():
             return
+            
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -1538,12 +1553,23 @@ class FretWidget(QWidget):
             )
 
         sample_layer = self.viewer.layers[labels_layer_name]
-        phasor_data = (
-            self.parent_widget._labels_layer_with_phasor_features.features
-        )
-        harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
-        real = phasor_data.loc[harmonic_mask, 'G']
-        imag = phasor_data.loc[harmonic_mask, 'S']
+        
+        # Retrieve arrays from metadata
+        g_array = sample_layer.metadata.get("G")
+        s_array = sample_layer.metadata.get("S")
+        harmonics = sample_layer.metadata.get("harmonics")
+        
+        try:
+            harmonic_idx = np.where(harmonics == self.parent_widget.harmonic)[0][0]
+            
+            if g_array.ndim == 3:
+                real = g_array[harmonic_idx]
+                imag = s_array[harmonic_idx]
+            else:
+                real = g_array
+                imag = s_array
+        except IndexError:
+            return
 
         if not hasattr(self, 'donor_lifetime') or self.donor_lifetime is None:
             try:
@@ -1577,15 +1603,13 @@ class FretWidget(QWidget):
             )
 
         fret_efficiency = phasor_nearest_neighbor(
-            np.array(real),
-            np.array(imag),
+            real,
+            imag,
             neighbor_real,
             neighbor_imag,
             values=self._fret_efficiencies,
         )
-        fret_efficiency = fret_efficiency.reshape(
-            self.parent_widget._labels_layer_with_phasor_features.data.shape
-        )
+        # fret_efficiency is already in correct shape (Y, X)
 
         fret_layer_name = f"FRET efficiency: {labels_layer_name}"
 
@@ -1617,7 +1641,7 @@ class FretWidget(QWidget):
         selected_fret_layer = Image(
             fret_efficiency,
             name=fret_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            scale=sample_layer.scale,
             colormap=default_colormap,
             contrast_limits=default_contrast_limits,
         )

@@ -96,7 +96,13 @@ class PlotterWidget(QWidget):
         self.viewer = napari_viewer
 
         self.setLayout(QVBoxLayout())
-        self._labels_layer_with_phasor_features = None
+
+        # Initialize data attributes
+        self._g_array = None
+        self._s_array = None
+        self._g_original_array = None
+        self._s_original_array = None
+        self._harmonics_array = None
 
         # Create a splitter to separate canvas from controls
         splitter = QSplitter(Qt.Vertical)
@@ -239,7 +245,7 @@ class PlotterWidget(QWidget):
 
         # Connect callbacks
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
+            self.on_image_layer_changed
         )
         # Update all frequency widgets from layer metadata if layer changes
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
@@ -329,17 +335,10 @@ class PlotterWidget(QWidget):
         if layer_name:
             try:
                 layer_metadata = self.viewer.layers[layer_name].metadata
-                if "phasor_features_labels_layer" in layer_metadata:
-                    phasor_features = layer_metadata[
-                        "phasor_features_labels_layer"
-                    ]
-                    if (
-                        phasor_features.features is not None
-                        and "harmonic" in phasor_features.features.columns
-                    ):
-                        default_harmonic = int(
-                            phasor_features.features["harmonic"].min()
-                        )
+                if "harmonics" in layer_metadata:
+                    harmonics = layer_metadata["harmonics"]
+                    if harmonics is not None:
+                        default_harmonic = int(np.min(harmonics))
             except (KeyError, AttributeError, ValueError):
                 pass
 
@@ -611,7 +610,7 @@ class PlotterWidget(QWidget):
             layer.name
             for layer in self.viewer.layers
             if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata
+            and all(key in layer.metadata for key in ["G", "S", "G_original", "S_original"])
             and layer.name != current_layer
         ]
         layer_combo.addItems(available_layers)
@@ -1469,7 +1468,10 @@ class PlotterWidget(QWidget):
                 layer.name
                 for layer in self.viewer.layers
                 if isinstance(layer, Image)
-                and "phasor_features_labels_layer" in layer.metadata.keys()
+                and "G" in layer.metadata.keys()
+                and "S" in layer.metadata.keys()
+                and "G_original" in layer.metadata.keys()
+                and "S_original" in layer.metadata.keys()
             ]
 
             self.image_layer_with_phasor_features_combobox.addItems(
@@ -1501,43 +1503,45 @@ class PlotterWidget(QWidget):
                 self.image_layer_with_phasor_features_combobox.currentText()
             )
             if new_text != current_text:
-                self.on_labels_layer_with_phasor_features_changed()
+                self.on_image_layer_changed()
                 self._sync_frequency_inputs_from_metadata()
 
         finally:
             self._resetting_layer_choices = False
 
-    def on_labels_layer_with_phasor_features_changed(self):
-        """Handle changes to the labels layer with phasor features."""
+    def on_image_layer_changed(self):
+        """Handle changes to the image layer with phasor features."""
         if getattr(
-            self, "_in_on_labels_layer_with_phasor_features_changed", False
+            self, "_in_on_image_layer_changed", False
         ):
             return
-        self._in_on_labels_layer_with_phasor_features_changed = True
+        self._in_on_image_layer_changed = True
         try:
-            labels_layer_name = (
+            layer_name = (
                 self.image_layer_with_phasor_features_combobox.currentText()
             )
-            if labels_layer_name == "":
-                self._labels_layer_with_phasor_features = None
+            if layer_name == "":
+                self._g_array = None
+                self._s_array = None
+                self._harmonics_array = None
                 return
-            layer_metadata = self.viewer.layers[labels_layer_name].metadata
-            self._labels_layer_with_phasor_features = layer_metadata[
-                "phasor_features_labels_layer"
-            ]
 
-            available_harmonics = (
-                self._labels_layer_with_phasor_features.features[
-                    "harmonic"
-                ].unique()
-            )
-            min_harmonic = int(available_harmonics.min())
-            max_harmonic = int(available_harmonics.max())
+            layer = self.viewer.layers[layer_name]
+            layer_metadata = layer.metadata
 
-            self.harmonic_spinbox.setMinimum(min_harmonic)
-            self.harmonic_spinbox.setMaximum(max_harmonic)
+            # Retrieve arrays from metadata
+            self._g_array = layer_metadata.get("G")
+            self._s_array = layer_metadata.get("S")
+            self._g_original_array = layer_metadata.get("G_original")
+            self._s_original_array = layer_metadata.get("S_original")
+            self._harmonics_array = layer_metadata.get("harmonics")
 
-            layer = self.viewer.layers[labels_layer_name]
+            if self._harmonics_array is not None:
+                self._harmonics_array = np.atleast_1d(self._harmonics_array)
+                min_harmonic = int(np.min(self._harmonics_array))
+                max_harmonic = int(np.max(self._harmonics_array))
+                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+            
             self._initialize_plot_settings_in_metadata(layer)
 
             self._restore_plot_settings_from_metadata()
@@ -1567,10 +1571,49 @@ class PlotterWidget(QWidget):
             self.plot()
 
         finally:
-            self._in_on_labels_layer_with_phasor_features_changed = False
+            self._in_on_image_layer_changed = False
+
+    def refresh_phasor_data(self):
+        """Reload phasor data from the current layer metadata and replot."""
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name or layer_name not in self.viewer.layers:
+            return
+
+        layer = self.viewer.layers[layer_name]
+        layer_metadata = layer.metadata
+
+        # Retrieve arrays from metadata
+        self._g_array = layer_metadata.get("G")
+        self._s_array = layer_metadata.get("S")
+        self._g_original_array = layer_metadata.get("G_original")
+        self._s_original_array = layer_metadata.get("S_original")
+        self._harmonics_array = layer_metadata.get("harmonics")
+
+        if self._harmonics_array is not None:
+            self._harmonics_array = np.atleast_1d(self._harmonics_array)
+
+        self.plot()
+
+    def has_phasor_data(self):
+        """Check if valid phasor data is loaded.
+        
+        Returns
+        -------
+        bool
+            True if all required phasor arrays are present, False otherwise.
+        """
+        return (
+            self._g_array is not None
+            and self._s_array is not None
+            and self._harmonics_array is not None
+            and self._g_original_array is not None
+            and self._s_original_array is not None
+        )
 
     def get_features(self):
-        """Get the G and S features for the selected harmonic and selection id.
+        """Get the G and S features for the selected harmonic.
 
         Returns
         -------
@@ -1578,33 +1621,30 @@ class PlotterWidget(QWidget):
             The G feature data.
         y_data : np.ndarray
             The S feature data.
-        selection_data : np.ndarray
-            The selection data.
         """
-        if self._labels_layer_with_phasor_features is None:
-            return None
-        if self._labels_layer_with_phasor_features.features is None:
+        if not self.has_phasor_data():
             return None
 
-        table = self._labels_layer_with_phasor_features.features
-        x_data = table['G'][table['harmonic'] == self.harmonic].values
-        y_data = table['S'][table['harmonic'] == self.harmonic].values
-        mask = np.isnan(x_data) & np.isnan(y_data)
-        x_data = x_data[~mask]
-        y_data = y_data[~mask]
+        try:
+            # Find index of current harmonic
+            harmonics = np.atleast_1d(self._harmonics_array)
+            harmonic_idx = np.where(harmonics == self.harmonic)[0][0]
+        except IndexError:
+            return None
 
-        if (
-            self.selection_tab.selection_id is None
-            or self.selection_tab.selection_id == ""
-            or self.selection_tab.selection_id not in table.columns
-        ):
-            return x_data, y_data, None
+        # Handle dimensions: (Harmonic, Y, X) or (Y, X)
+        if self._g_array.ndim == 3:
+            g_flat = self._g_array[harmonic_idx].ravel()
+            s_flat = self._s_array[harmonic_idx].ravel()
         else:
-            selection_data = table[self.selection_tab.selection_id][
-                table['harmonic'] == self.harmonic
-            ].values
-            selection_data = selection_data[~mask]
-            return x_data, y_data, selection_data
+            g_flat = self._g_array.ravel()
+            s_flat = self._s_array.ravel()
+
+        mask = np.isnan(g_flat) | np.isnan(s_flat)
+        x_data = g_flat[~mask]
+        y_data = s_flat[~mask]
+
+        return x_data, y_data
 
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
@@ -1729,7 +1769,7 @@ class PlotterWidget(QWidget):
 
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
         """Plot the selected phasor features efficiently."""
-        if self._labels_layer_with_phasor_features is None:
+        if not self.has_phasor_data():
             return
 
         if getattr(self, '_updating_plot', False):
@@ -1737,20 +1777,21 @@ class PlotterWidget(QWidget):
 
         self._updating_plot = True
 
-        if x_data is None or y_data is None:
-            features = self.get_features()
-            if features is None:
+        try:
+            if x_data is None or y_data is None:
+                features = self.get_features()
+                if features is None:
+                    return
+                x_data, y_data = features
+
+            if len(x_data) == 0 or len(y_data) == 0:
                 return
-            x_data, y_data, selection_id_data = features
 
-        if len(x_data) == 0 or len(y_data) == 0:
-            return
-
-        self._set_active_artist_and_plot(
-            self.plot_type, x_data, y_data, selection_id_data
-        )
-
-        self._updating_plot = False
+            self._set_active_artist_and_plot(
+                self.plot_type, x_data, y_data, selection_id_data
+            )
+        finally:
+            self._updating_plot = False
 
     def refresh_current_plot(self):
         """Refresh the current plot with existing data."""
@@ -1762,10 +1803,16 @@ class PlotterWidget(QWidget):
 
         features = self.get_features()
         if features is not None:
-            x_data, y_data, selection_id_data = features
+            x_data, y_data = features
             self._set_active_artist_and_plot(
-                new_plot_type, x_data, y_data, selection_id_data
+                new_plot_type, x_data, y_data, selection_id_data=None
             )
+            
+            # Restore selection visualization if active
+            if hasattr(self, 'selection_tab') and self.selection_tab.selection_id not in [None, "None", ""]:
+                self.selection_tab.update_phasor_plot_with_selection_id(
+                    self.selection_tab.selection_id
+                )
 
     def _set_active_artist_and_plot(
         self, plot_type, x_data, y_data, selection_id_data=None

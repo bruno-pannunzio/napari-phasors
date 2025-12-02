@@ -62,16 +62,15 @@ def _extract_phasor_arrays_from_layer(
         (mean, real, imag, harmonics) arrays
     """
     mean = layer.metadata['original_mean'].copy()
-    phasor_features = layer.metadata['phasor_features_labels_layer'].features
-
+    
     if harmonics is None:
-        harmonics = np.unique(phasor_features['harmonic'])
+        harmonics = layer.metadata.get('harmonics')
 
-    real = phasor_features['G_original'].copy()
-    imag = phasor_features['S_original'].copy()
-    real = np.reshape(real, (len(harmonics),) + mean.shape)
-    imag = np.reshape(imag, (len(harmonics),) + mean.shape)
-
+    real = layer.metadata['G_original'].copy()
+    imag = layer.metadata['S_original'].copy()
+    
+    # Arrays are already in correct shape (Harmonics, Y, X) or (Y, X)
+    
     return mean, real, imag, harmonics
 
 
@@ -205,12 +204,9 @@ def apply_filter_and_threshold(
         levels=levels,
     )
 
-    layer.metadata['phasor_features_labels_layer'].features[
-        'G'
-    ] = real.flatten()
-    layer.metadata['phasor_features_labels_layer'].features[
-        'S'
-    ] = imag.flatten()
+    # Update arrays in metadata directly
+    layer.metadata['G'] = real
+    layer.metadata['S'] = imag
     layer.data = mean
 
     if "settings" not in layer.metadata:
