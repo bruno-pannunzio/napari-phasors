@@ -1829,6 +1829,7 @@ class HistogramWidget(QWidget):
         n = len(self._counts_per_dataset)
 
         if self._show_sd and n > 1:
+            # Multiple layers with SD: show mean line + SD shaded area
             all_counts = np.array(
                 list(self._counts_per_dataset.values()), dtype=float
             )
