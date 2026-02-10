@@ -49,6 +49,7 @@ from qtpy.QtWidgets import (
 )
 
 from ._utils import CheckableComboBox, HistogramDockWidget, update_frequency_in_metadata
+from ._utils import CheckableComboBox, HistogramDockWidget, update_frequency_in_metadata
 from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
@@ -1469,6 +1470,11 @@ class PlotterWidget(QWidget):
         self._hide_all_tab_artists()
 
         self._show_tab_artists(current_tab)
+
+
+
+        # Show/hide detachable histogram dock widgets
+        self._update_histogram_dock_visibility(current_tab)
 
 
         # Show/hide detachable histogram dock widgets
