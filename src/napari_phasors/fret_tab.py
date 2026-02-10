@@ -327,6 +327,8 @@ class FretWidget(QWidget):
         layout.addWidget(self.calculate_fret_efficiency_button)
 
         # FRET efficiency histogram
+        # NOTE: The widget is created here but NOT added to this tab's layout.
+        # PlotterWidget wraps it in a HistogramDockWidget for a detachable window.
         self.histogram_widget = HistogramWidget(
             xlabel="FRET efficiency",
             ylabel="Pixel count",
@@ -337,7 +339,6 @@ class FretWidget(QWidget):
             range_factor=1000,
             parent=self,
         )
-        layout.addWidget(self.histogram_widget)
 
         # Connect range-slider signal
         self.histogram_widget.rangeChanged.connect(

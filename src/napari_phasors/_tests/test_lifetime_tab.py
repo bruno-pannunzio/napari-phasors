@@ -238,9 +238,13 @@ def test_lifetime_widget_canvas_properties(make_napari_viewer):
     assert lifetime_widget.histogram_widget.fig.get_constrained_layout()
 
     canvas_widgets = lifetime_widget.findChildren(FigureCanvasQTAgg)
-    assert len(canvas_widgets) == 1
+    # The histogram canvas now lives in the detachable dock widget,
+    # not inside the lifetime tab itself.
+    assert len(canvas_widgets) == 0
 
-    canvas = canvas_widgets[0]
+    # Access the canvas through the histogram widget directly
+    canvas = lifetime_widget.histogram_widget.fig.canvas
+    assert isinstance(canvas, FigureCanvasQTAgg)
     assert canvas.height() == 150  # Fixed height as set in setup_ui
 
 

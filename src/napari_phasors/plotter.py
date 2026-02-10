@@ -15,7 +15,6 @@ from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
 from qtpy.QtCore import Qt, QTimer, Signal
-from qtpy.QtGui import QStandardItem, QStandardItemModel
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,13 +26,12 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
-    QStyledItemDelegate,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ._utils import update_frequency_in_metadata
+from ._utils import CheckableComboBox, HistogramDockWidget, update_frequency_in_metadata
 from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
@@ -41,146 +39,6 @@ from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 from .selection_tab import SelectionWidget
 
-
-class CheckableComboBox(QComboBox):
-    """A ComboBox with checkable items for multi-selection.
-
-    Displays selected items as comma-separated text and emits
-    selectionChanged signal when items are checked/unchecked.
-    """
-
-    selectionChanged = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setModel(QStandardItemModel(self))
-        self.setEditable(True)
-        self.lineEdit().setReadOnly(True)
-        self.lineEdit().setPlaceholderText("Select layers...")
-
-        # Use a delegate to prevent closing on click
-        self.setItemDelegate(QStyledItemDelegate(self))
-
-        # Connect model signals
-        self.model().dataChanged.connect(self._on_data_changed)
-
-        # Track if we're inside the popup
-        self._popup_visible = False
-
-        # Make the line edit clickable to open popup
-        self.lineEdit().installEventFilter(self)
-        # Prevent cursor positioning in line edit
-        self.lineEdit().setFocusPolicy(Qt.NoFocus)
-
-        # Install event filter on view to handle item clicks
-        self.view().viewport().installEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        """Filter events to make line edit clickable and handle item clicks."""
-        if obj == self.lineEdit():
-            if event.type() == event.MouseButtonRelease:
-                # Toggle popup on mouse release
-                if not self.view().isVisible():
-                    self.showPopup()
-                return True
-            elif event.type() == event.MouseButtonPress:
-                # Consume press event to prevent default behavior
-                return True
-        elif obj == self.view().viewport():
-            if event.type() == event.MouseButtonRelease:
-                # Get the index of the clicked item
-                index = self.view().indexAt(event.pos())
-                if index.isValid():
-                    # Toggle the check state
-                    item = self.model().itemFromIndex(index)
-                    if item:
-                        current_state = item.checkState()
-                        new_state = (
-                            Qt.Unchecked
-                            if current_state == Qt.Checked
-                            else Qt.Checked
-                        )
-                        item.setCheckState(new_state)
-                    return True
-        return super().eventFilter(obj, event)
-
-    def addItem(self, text, checked=False):
-        """Add a checkable item to the combobox."""
-        item = QStandardItem(text)
-        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
-        item.setData(
-            Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole
-        )
-        self.model().appendRow(item)
-
-    def addItems(self, texts):
-        """Add multiple items to the combobox."""
-        for text in texts:
-            self.addItem(text)
-
-    def clear(self):
-        """Clear all items."""
-        self.model().clear()
-        self._update_display_text()
-
-    def checkedItems(self):
-        """Return list of checked item texts."""
-        checked = []
-        for i in range(self.model().rowCount()):
-            item = self.model().item(i)
-            if item.checkState() == Qt.Checked:
-                checked.append(item.text())
-        return checked
-
-    def setCheckedItems(self, texts):
-        """Set which items are checked by their text."""
-        self.blockSignals(True)
-        for i in range(self.model().rowCount()):
-            item = self.model().item(i)
-            if item.text() in texts:
-                item.setCheckState(Qt.Checked)
-            else:
-                item.setCheckState(Qt.Unchecked)
-        self.blockSignals(False)
-        self._update_display_text()
-
-    def _on_data_changed(self, topLeft, bottomRight, roles):
-        """Handle item check state changes."""
-        if Qt.CheckStateRole in roles:
-            self._update_display_text()
-            self.selectionChanged.emit()
-
-    def _update_display_text(self):
-        """Update the display text to show checked items."""
-        checked = self.checkedItems()
-        if not checked:
-            self.lineEdit().setText("")
-            self.lineEdit().setPlaceholderText("Select layers...")
-        elif len(checked) == 1:
-            self.lineEdit().setText(checked[0])
-        else:
-            self.lineEdit().setText(f"{len(checked)} layers selected")
-
-    def showPopup(self):
-        """Show the popup and track visibility."""
-        self._popup_visible = True
-        super().showPopup()
-
-    def hidePopup(self):
-        """Hide the popup."""
-        self._popup_visible = False
-        super().hidePopup()
-
-    def itemCheckState(self, index):
-        """Get the check state of item at index."""
-        item = self.model().item(index)
-        return item.checkState() if item else Qt.Unchecked
-
-    def setItemCheckState(self, index, state):
-        """Set the check state of item at index."""
-        item = self.model().item(index)
-        if item:
-            item.setCheckState(state)
 
 
 class _ListWidgetCompatWrapper:
@@ -518,6 +376,35 @@ class PlotterWidget(QWidget):
             self.viewer.window.add_dock_widget(
                 self.analysis_widget, name="Phasor Analysis", area="right"
             )
+
+            # Add detachable histogram dock widgets
+            if hasattr(self, 'lifetime_histogram_dock_widget'):
+                self._lifetime_hist_dock = (
+                    self.viewer.window.add_dock_widget(
+                        self.lifetime_histogram_dock_widget,
+                        name="Lifetime Histogram",
+                        area="right",
+                    )
+                )
+                self._lifetime_hist_dock.setVisible(False)
+
+            if hasattr(self, 'fret_histogram_dock_widget'):
+                self._fret_hist_dock = self.viewer.window.add_dock_widget(
+                    self.fret_histogram_dock_widget,
+                    name="FRET Histogram",
+                    area="right",
+                )
+                self._fret_hist_dock.setVisible(False)
+
+            if hasattr(self, 'components_histogram_dock_widget'):
+                self._components_hist_dock = (
+                    self.viewer.window.add_dock_widget(
+                        self.components_histogram_dock_widget,
+                        name="Components Histogram",
+                        area="right",
+                    )
+                )
+                self._components_hist_dock.setVisible(False)
 
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
@@ -1052,6 +939,9 @@ class PlotterWidget(QWidget):
 
         self._show_tab_artists(current_tab)
 
+        # Show/hide detachable histogram dock widgets
+        self._update_histogram_dock_visibility(current_tab)
+
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _hide_all_tab_artists(self):
@@ -1111,6 +1001,19 @@ class PlotterWidget(QWidget):
         """Set visibility of FRET tab artists."""
         if hasattr(self, 'fret_tab'):
             self.fret_tab.set_artists_visible(visible)
+
+    def _update_histogram_dock_visibility(self, current_tab):
+        """Show the histogram dock for the active tab, hide others."""
+        is_lifetime = current_tab == getattr(self, 'lifetime_tab', None)
+        is_fret = current_tab == getattr(self, 'fret_tab', None)
+        is_components = current_tab == getattr(self, 'components_tab', None)
+
+        if hasattr(self, '_lifetime_hist_dock'):
+            self._lifetime_hist_dock.setVisible(is_lifetime)
+        if hasattr(self, '_fret_hist_dock'):
+            self._fret_hist_dock.setVisible(is_fret)
+        if hasattr(self, '_components_hist_dock'):
+            self._components_hist_dock.setVisible(is_components)
 
     def _on_semi_circle_changed(self, state):
         """Callback for semi circle checkbox change."""
@@ -1232,10 +1135,33 @@ class PlotterWidget(QWidget):
         self.components_tab = ComponentsWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.components_tab, "Components")
 
+        # Wrap the histogram in a detachable dock widget
+        self.components_histogram_dock_widget = HistogramDockWidget(
+            self.components_tab.histogram_widget,
+            title="Components Histogram & Statistics",
+        )
+
+        # Insert component selector combobox at the top of the dock widget
+        dock_layout = self.components_histogram_dock_widget.layout()
+        component_selector = QWidget()
+        selector_layout = QHBoxLayout(component_selector)
+        selector_layout.setContentsMargins(4, 4, 4, 0)
+        selector_layout.addWidget(QLabel("Component:"))
+        selector_layout.addWidget(
+            self.components_tab.histogram_component_combobox, 1
+        )
+        dock_layout.insertWidget(0, component_selector)
+
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
         self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
+
+        # Wrap the histogram in a detachable dock widget
+        self.lifetime_histogram_dock_widget = HistogramDockWidget(
+            self.lifetime_tab.histogram_widget,
+            title="Lifetime Histogram & Statistics",
+        )
 
         self.harmonic_spinbox.valueChanged.connect(
             self.lifetime_tab._on_harmonic_changed
@@ -1250,6 +1176,13 @@ class PlotterWidget(QWidget):
         """Create the FRET tab."""
         self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
+
+        # Wrap the histogram in a detachable dock widget
+        self.fret_histogram_dock_widget = HistogramDockWidget(
+            self.fret_tab.histogram_widget,
+            title="FRET Histogram & Statistics",
+        )
+
         self.fret_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
                 self.fret_tab.frequency_input.text()

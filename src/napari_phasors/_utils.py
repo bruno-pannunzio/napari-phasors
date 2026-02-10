@@ -13,6 +13,7 @@ from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
 from phasorpy.filter import (
     phasor_filter_median,
@@ -20,15 +21,22 @@ from phasorpy.filter import (
     phasor_threshold,
 )
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QDoubleValidator
+from qtpy.QtGui import QColor, QDoubleValidator, QStandardItem, QStandardItemModel
 from qtpy.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QStyledItemDelegate,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -314,13 +322,161 @@ def update_frequency_in_metadata(
     image_layer.metadata["settings"]["frequency"] = frequency
 
 
+class CheckableComboBox(QComboBox):
+    """A ComboBox with checkable items for multi-selection.
+
+    Displays selected items as comma-separated text and emits
+    ``selectionChanged`` signal when items are checked/unchecked.
+
+    Parameters
+    ----------
+    placeholder : str, optional
+        Placeholder text shown when no items are checked.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    selectionChanged = Signal()
+
+    def __init__(self, placeholder: str = "Select items...", parent=None):
+        super().__init__(parent)
+        self.setModel(QStandardItemModel(self))
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setPlaceholderText(placeholder)
+        self._placeholder = placeholder
+
+        # Use a delegate to prevent closing on click
+        self.setItemDelegate(QStyledItemDelegate(self))
+
+        # Connect model signals
+        self.model().dataChanged.connect(self._on_data_changed)
+
+        # Track if we're inside the popup
+        self._popup_visible = False
+
+        # Make the line edit clickable to open popup
+        self.lineEdit().installEventFilter(self)
+        # Prevent cursor positioning in line edit
+        self.lineEdit().setFocusPolicy(Qt.NoFocus)
+
+        # Install event filter on view to handle item clicks
+        self.view().viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        """Filter events to make line edit clickable and handle item clicks."""
+        if obj == self.lineEdit():
+            if event.type() == event.MouseButtonRelease:
+                if not self.view().isVisible():
+                    self.showPopup()
+                return True
+            elif event.type() == event.MouseButtonPress:
+                return True
+        elif obj == self.view().viewport():
+            if event.type() == event.MouseButtonRelease:
+                index = self.view().indexAt(event.pos())
+                if index.isValid():
+                    item = self.model().itemFromIndex(index)
+                    if item:
+                        current_state = item.checkState()
+                        new_state = (
+                            Qt.Unchecked
+                            if current_state == Qt.Checked
+                            else Qt.Checked
+                        )
+                        item.setCheckState(new_state)
+                    return True
+        return super().eventFilter(obj, event)
+
+    def addItem(self, text, checked=False):
+        """Add a checkable item to the combobox."""
+        item = QStandardItem(text)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+        item.setData(
+            Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole
+        )
+        self.model().appendRow(item)
+
+    def addItems(self, texts):
+        """Add multiple items to the combobox."""
+        for text in texts:
+            self.addItem(text)
+
+    def clear(self):
+        """Clear all items."""
+        self.model().clear()
+        self._update_display_text()
+
+    def checkedItems(self):
+        """Return list of checked item texts."""
+        checked = []
+        for i in range(self.model().rowCount()):
+            item = self.model().item(i)
+            if item.checkState() == Qt.Checked:
+                checked.append(item.text())
+        return checked
+
+    def setCheckedItems(self, texts):
+        """Set which items are checked by their text."""
+        self.blockSignals(True)
+        for i in range(self.model().rowCount()):
+            item = self.model().item(i)
+            if item.text() in texts:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+        self.blockSignals(False)
+        self._update_display_text()
+
+    def _on_data_changed(self, topLeft, bottomRight, roles):
+        """Handle item check state changes."""
+        if Qt.CheckStateRole in roles:
+            self._update_display_text()
+            self.selectionChanged.emit()
+
+    def _update_display_text(self):
+        """Update the display text to show checked items."""
+        checked = self.checkedItems()
+        if not checked:
+            self.lineEdit().setText("")
+            self.lineEdit().setPlaceholderText(self._placeholder)
+        elif len(checked) == 1:
+            self.lineEdit().setText(checked[0])
+        else:
+            self.lineEdit().setText(f"{len(checked)} selected")
+
+    def showPopup(self):
+        """Show the popup and track visibility."""
+        self._popup_visible = True
+        super().showPopup()
+
+    def hidePopup(self):
+        """Hide the popup."""
+        self._popup_visible = False
+        super().hidePopup()
+
+    def itemCheckState(self, index):
+        """Get the check state of item at index."""
+        item = self.model().item(index)
+        return item.checkState() if item else Qt.Unchecked
+
+    def setItemCheckState(self, index, state):
+        """Set the check state of item at index."""
+        item = self.model().item(index)
+        if item:
+            item.setCheckState(state)
+
+
 class HistogramSettingsDialog(QDialog):
     """Dialog for histogram visualization settings.
 
     Provides controls for:
-    - Display mode: Merged / Separate layers / Grouped.
+    - Display mode: Merged / Individual layers / Grouped.
     - Toggling SD shading (for Merged and Grouped modes).
-    - Group assignment per layer (for Grouped mode).
+    - Central-tendency vertical line (Mean / Median / Center of mass).
+    - Show / hide legend.
+    - Per-layer colour selection (Individual layers mode).
+    - Group assignment and per-group colour (Grouped mode).
 
     Parameters
     ----------
@@ -328,27 +484,44 @@ class HistogramSettingsDialog(QDialog):
         Initial display mode.
     show_sd : bool
         Initial state of the *Show standard deviation* checkbox.
+    central_tendency : str
+        Initial central-tendency line selection.
+    show_legend : bool
+        Initial state of the *Show legend* checkbox.
     layer_labels : list of str, optional
         Layer names for group assignment.
     group_assignments : dict, optional
         ``{label: group_int}`` initial group assignments.
+    layer_colors : dict, optional
+        ``{label: (r, g, b)}`` initial per-layer colours (0-1 floats).
+    group_colors : dict, optional
+        ``{group_id: (r, g, b)}`` initial per-group colours (0-1 floats).
+    group_names : dict, optional
+        ``{group_id: str}`` initial per-group display names.
     parent : QWidget, optional
         Parent widget.
     """
 
-    DISPLAY_MODES = ("Merged", "Separate layers", "Grouped")
+    DISPLAY_MODES = ("Merged", "Individual layers", "Grouped")
+    CENTRAL_TENDENCY_OPTIONS = ("None", "Center of mass", "Mean", "Median", )
+    MAX_GROUPS = 6
 
     def __init__(
         self,
         display_mode: str = "Merged",
         show_sd: bool = False,
+        central_tendency: str = "None",
+        show_legend: bool = False,
         layer_labels: list = None,
         group_assignments: dict = None,
+        layer_colors: dict = None,
+        group_colors: dict = None,
+        group_names: dict = None,
         parent: QWidget = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Histogram Settings")
-        self.setMinimumWidth(320)
+        self.setMinimumWidth(340)
 
         layout = QVBoxLayout(self)
 
@@ -366,26 +539,116 @@ class HistogramSettingsDialog(QDialog):
         self.sd_checkbox.setChecked(show_sd)
         layout.addWidget(self.sd_checkbox)
 
-        # --- Group assignments (only for Grouped mode) ---
+        # --- Central tendency ---
+        ct_layout = QHBoxLayout()
+        ct_layout.addWidget(QLabel("Show line:"))
+        self.central_tendency_combo = QComboBox()
+        self.central_tendency_combo.addItems(
+            list(self.CENTRAL_TENDENCY_OPTIONS)
+        )
+        self.central_tendency_combo.setCurrentText(central_tendency)
+        ct_layout.addWidget(self.central_tendency_combo)
+        layout.addLayout(ct_layout)
+
+        # --- Show legend ---
+        self.legend_checkbox = QCheckBox("Show legend")
+        self.legend_checkbox.setChecked(show_legend)
+        layout.addWidget(self.legend_checkbox)
+
+        # --- White background ---
+        self.white_bg_checkbox = QCheckBox("White background")
+        self.white_bg_checkbox.setChecked(False)
+        layout.addWidget(self.white_bg_checkbox)
+
+        # --- Smooth curves ---
+        self.smooth_checkbox = QCheckBox("Smooth curves")
+        self.smooth_checkbox.setChecked(True)
+        layout.addWidget(self.smooth_checkbox)
+
+        # --- Layer colours (Individual layers mode) ---
+        default_tab10 = plt.cm.tab10.colors
+
+        self._layer_section = QWidget()
+        layer_sec_layout = QVBoxLayout(self._layer_section)
+        layer_sec_layout.setContentsMargins(0, 0, 0, 0)
+        layer_sec_layout.addWidget(QLabel("Layer colours:"))
+        self._layer_color_buttons = {}
+        if layer_labels:
+            for idx, label in enumerate(layer_labels):
+                row = QHBoxLayout()
+                name_lbl = QLabel(label)
+                name_lbl.setMaximumWidth(200)
+                row.addWidget(name_lbl)
+                if layer_colors and label in layer_colors:
+                    color = layer_colors[label]
+                else:
+                    color = default_tab10[idx % len(default_tab10)][:3]
+                btn = QPushButton()
+                btn.setFixedSize(24, 24)
+                self._set_btn_color(btn, color)
+                btn.clicked.connect(
+                    lambda checked, b=btn: self._pick_color(b)
+                )
+                row.addWidget(btn)
+                layer_sec_layout.addLayout(row)
+                self._layer_color_buttons[label] = btn
+        layout.addWidget(self._layer_section)
+
+        # --- Group section (Grouped mode) ---
         self._group_section = QWidget()
         group_layout = QVBoxLayout(self._group_section)
         group_layout.setContentsMargins(0, 0, 0, 0)
-        group_layout.addWidget(QLabel("Assign layers to groups:"))
+        group_layout.addWidget(QLabel("Groups:"))
 
-        self._group_combos = {}
-        if layer_labels:
-            for label in layer_labels:
-                row = QHBoxLayout()
-                name_label = QLabel(label)
-                name_label.setMaximumWidth(200)
-                row.addWidget(name_label)
-                combo = QComboBox()
-                combo.addItems([str(i) for i in range(1, 7)])
-                if group_assignments and label in group_assignments:
-                    combo.setCurrentText(str(group_assignments[label]))
-                row.addWidget(combo)
-                group_layout.addLayout(row)
-                self._group_combos[label] = combo
+        # Scroll area to hold group rows
+        self._group_rows_widget = QWidget()
+        self._group_rows_layout = QVBoxLayout(self._group_rows_widget)
+        self._group_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._group_rows_layout.setSpacing(4)
+        group_layout.addWidget(self._group_rows_widget)
+
+        # Store group row data: list of dicts with keys:
+        #   'container', 'name_edit', 'color_btn', 'layer_combo'
+        self._group_row_data = []
+        self._layer_labels = layer_labels or []
+
+        # Populate groups from existing assignments
+        if group_assignments and layer_labels:
+            # Infer groups from assignments
+            groups_seen = {}
+            for label, gid in group_assignments.items():
+                groups_seen.setdefault(gid, []).append(label)
+            for gid in sorted(groups_seen):
+                default_c = default_tab10[(gid - 1) % len(default_tab10)][:3]
+                gc = (
+                    group_colors[gid]
+                    if group_colors and gid in group_colors
+                    else default_c
+                )
+                gname = (
+                    group_names.get(gid, f"Group {gid}")
+                    if group_names
+                    else f"Group {gid}"
+                )
+                self._add_group_row(
+                    name=gname,
+                    color=gc,
+                    checked_layers=groups_seen[gid],
+                )
+        else:
+            # Start with one empty group
+            gc = default_tab10[0][:3]
+            self._add_group_row(
+                name="Group 1",
+                color=gc,
+                checked_layers=layer_labels or [],
+            )
+
+        # Add group button
+        add_group_btn = QPushButton("+ Add Group")
+        add_group_btn.setMaximumWidth(120)
+        add_group_btn.clicked.connect(self._on_add_group)
+        group_layout.addWidget(add_group_btn)
 
         layout.addWidget(self._group_section)
 
@@ -403,19 +666,169 @@ class HistogramSettingsDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _set_btn_color(btn, color):
+        """Set a button's background from an (r, g, b) 0-1 float tuple."""
+        r = int(color[0] * 255)
+        g = int(color[1] * 255)
+        b = int(color[2] * 255)
+        btn.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); border: 1px solid grey;"
+        )
+        btn._color = tuple(color[:3])
+
+    def _pick_color(self, btn):
+        """Open a colour picker for *btn*."""
+        cur = btn._color
+        initial = QColor.fromRgbF(cur[0], cur[1], cur[2])
+        chosen = QColorDialog.getColor(initial, self)
+        if chosen.isValid():
+            rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
+            self._set_btn_color(btn, rgb)
+
     def _update_ui_for_mode(self, mode: str) -> None:
         """Show/hide controls depending on the selected mode."""
         is_grouped = mode == "Grouped"
-        is_separate = mode == "Separate layers"
+        is_individual = mode == "Individual layers"
         self._group_section.setVisible(is_grouped)
+        self._layer_section.setVisible(is_individual)
         # SD only meaningful for Merged / Grouped
-        self.sd_checkbox.setEnabled(not is_separate)
+        self.sd_checkbox.setEnabled(not is_individual)
+        # Legend only meaningful for Individual / Grouped
+        self.legend_checkbox.setEnabled(is_individual or is_grouped)
+
+    # ------------------------------------------------------------------
+    # Group row management
+    # ------------------------------------------------------------------
+
+    def _add_group_row(
+        self,
+        name: str = "Group",
+        color=None,
+        checked_layers: list = None,
+    ) -> None:
+        """Add a new group row to the group section.
+
+        Parameters
+        ----------
+        name : str
+            Default name for the group.
+        color : tuple, optional
+            (r, g, b) colour in 0-1 floats. If None, auto-assigned.
+        checked_layers : list, optional
+            Layer names to pre-check.
+        """
+        default_tab10 = plt.cm.tab10.colors
+        idx = len(self._group_row_data)
+        if color is None:
+            color = default_tab10[idx % len(default_tab10)][:3]
+
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        # Name edit
+        name_edit = QLineEdit(name)
+        name_edit.setMaximumWidth(120)
+        name_edit.setPlaceholderText("Name")
+        row_layout.addWidget(name_edit)
+
+        # Color button
+        color_btn = QPushButton()
+        color_btn.setFixedSize(24, 24)
+        self._set_btn_color(color_btn, color)
+        color_btn.clicked.connect(
+            lambda checked, b=color_btn: self._pick_color(b)
+        )
+        row_layout.addWidget(color_btn)
+
+        # Checkable combobox for layer selection
+        layer_combo = CheckableComboBox(
+            placeholder="Select layers...", parent=self
+        )
+        layer_combo.addItems(self._layer_labels)
+        if checked_layers:
+            layer_combo.setCheckedItems(checked_layers)
+        row_layout.addWidget(layer_combo, 1)
+
+        # Remove button
+        remove_btn = QPushButton("\u2212")  # minus sign
+        remove_btn.setFixedSize(24, 24)
+        remove_btn.setToolTip("Remove this group")
+        remove_btn.clicked.connect(
+            lambda: self._on_remove_group(row_widget)
+        )
+        row_layout.addWidget(remove_btn)
+
+        self._group_rows_layout.addWidget(row_widget)
+        self._group_row_data.append(
+            {
+                "container": row_widget,
+                "name_edit": name_edit,
+                "color_btn": color_btn,
+                "layer_combo": layer_combo,
+            }
+        )
+
+    def _on_add_group(self) -> None:
+        """Slot for the *Add Group* button."""
+        idx = len(self._group_row_data) + 1
+        self._add_group_row(name=f"Group {idx}")
+
+    def _on_remove_group(self, row_widget: QWidget) -> None:
+        """Remove a group row by its container widget."""
+        if len(self._group_row_data) <= 1:
+            return  # always keep at least one group
+        for i, data in enumerate(self._group_row_data):
+            if data["container"] is row_widget:
+                self._group_rows_layout.removeWidget(row_widget)
+                row_widget.deleteLater()
+                self._group_row_data.pop(i)
+                break
+
+    # ------------------------------------------------------------------
+    # Accessors
+    # ------------------------------------------------------------------
 
     def get_group_assignments(self) -> dict:
-        """Return ``{label: group_int}`` from the dialog."""
+        """Return ``{label: group_int}`` from the dialog.
+
+        Groups are numbered starting from 1 in the order they appear.
+        A layer that is checked in multiple groups is assigned to the
+        first group that contains it.
+        """
+        assignments = {}
+        for gid_zero, row in enumerate(self._group_row_data):
+            gid = gid_zero + 1
+            for layer in row["layer_combo"].checkedItems():
+                if layer not in assignments:
+                    assignments[layer] = gid
+        return assignments
+
+    def get_group_names(self) -> dict:
+        """Return ``{group_id: str}`` from the dialog."""
         return {
-            label: int(combo.currentText())
-            for label, combo in self._group_combos.items()
+            i + 1: row["name_edit"].text() or f"Group {i + 1}"
+            for i, row in enumerate(self._group_row_data)
+        }
+
+    def get_layer_colors(self) -> dict:
+        """Return ``{label: (r, g, b)}`` from the dialog."""
+        return {
+            label: btn._color
+            for label, btn in self._layer_color_buttons.items()
+        }
+
+    def get_group_colors(self) -> dict:
+        """Return ``{group_id: (r, g, b)}`` from the dialog."""
+        return {
+            i + 1: row["color_btn"]._color
+            for i, row in enumerate(self._group_row_data)
         }
 
 
@@ -460,6 +873,8 @@ class HistogramWidget(QWidget):
 
     # Emitted as (min_float, max_float) whenever the range changes.
     rangeChanged = Signal(float, float)
+    # Emitted whenever the underlying data or display settings change.
+    dataChanged = Signal()
 
     def __init__(
         self,
@@ -487,6 +902,7 @@ class HistogramWidget(QWidget):
         # Multi-layer state
         self._datasets = {}  # {label: valid_1d_array}
         self._counts_per_dataset = {}  # {label: counts on common bins}
+        self._previous_dataset_count = 0  # Track transitions for auto-enabling SD
 
         # Colormap state (set externally)
         self.colormap_colors = None  # Nx4 array of RGBA colors
@@ -496,9 +912,16 @@ class HistogramWidget(QWidget):
         self._raw_valid_data = None
 
         # Display settings
-        self._display_mode = "Merged"  # "Merged", "Separate layers", "Grouped"
+        self._display_mode = "Merged"  # "Merged", "Individual layers", "Grouped"
         self._show_sd = False
         self._group_assignments = {}  # {label: group_int}
+        self._group_names = {}  # {group_id: str}
+        self._central_tendency = "None"
+        self._show_legend = True
+        self._layer_colors = {}   # {label: (r,g,b)}
+        self._group_colors = {}   # {group_id: (r,g,b)}
+        self._white_background = False
+        self._smooth_curves = True
 
         # Range slider state
         self._range_slider_enabled = range_slider_enabled
@@ -510,7 +933,7 @@ class HistogramWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # --- Optional range slider section ---
+        # Optional range slider section
         if self._range_slider_enabled:
             self.range_label = QLabel(
                 f"{self._range_label_prefix}: 0.0 - 100.0"
@@ -547,7 +970,7 @@ class HistogramWidget(QWidget):
                 self._on_range_max_edit
             )
 
-        # --- Matplotlib canvas ---
+        # Matplotlib canvas
         self.fig, self.ax = plt.subplots(
             figsize=(8, 4), constrained_layout=True
         )
@@ -560,31 +983,30 @@ class HistogramWidget(QWidget):
         )
         layout.addWidget(canvas)
 
-        # --- Bottom controls: settings button + central tendency combo ---
-        bottom_layout = QHBoxLayout()
+        # Settings and export controls in one row
+        controls_layout = QHBoxLayout()
+        
         self._settings_button = QPushButton("Histogram Settings…")
-        self._settings_button.setMaximumWidth(180)
+        self._settings_button.setMaximumWidth(150)
         self._settings_button.clicked.connect(self._open_settings_dialog)
-        bottom_layout.addWidget(self._settings_button)
-
-        bottom_layout.addWidget(QLabel("Show line:"))
-        self._central_tendency_combo = QComboBox()
-        self._central_tendency_combo.addItems(
-            ["None", "Mean", "Median", "Center of mass"]
-        )
-        self._central_tendency_combo.currentTextChanged.connect(
-            self._on_central_tendency_changed
-        )
-        bottom_layout.addWidget(self._central_tendency_combo)
-        bottom_layout.addStretch()
-        layout.addLayout(bottom_layout)
+        controls_layout.addWidget(self._settings_button)
+        
+        controls_layout.addStretch()
+        
+        self.export_csv_button = QPushButton("Export Table CSV")
+        self.export_csv_button.setMinimumWidth(140)
+        self.export_csv_button.clicked.connect(self._export_table_csv)
+        controls_layout.addWidget(self.export_csv_button)
+        
+        self.save_png_button = QPushButton("Save Histogram as PNG")
+        self.save_png_button.setMinimumWidth(180)
+        self.save_png_button.clicked.connect(self._save_histogram_png)
+        controls_layout.addWidget(self.save_png_button)
+        
+        layout.addLayout(controls_layout)
 
         # Start hidden
         self.hide()
-
-    # ------------------------------------------------------------------
-    # Range-slider helpers (only active when range_slider_enabled=True)
-    # ------------------------------------------------------------------
 
     def set_range(
         self, min_val: float, max_val: float, *, slider_max: float = None
@@ -622,8 +1044,6 @@ class HistogramWidget(QWidget):
             return (0.0, 0.0)
         lo, hi = self.range_slider.value()
         return lo / self.range_factor, hi / self.range_factor
-
-    # internal range-slider callbacks
 
     def _on_range_label_update(self, value):
         """Update label + edits while dragging (no heavy work)."""
@@ -673,6 +1093,55 @@ class HistogramWidget(QWidget):
         self.rangeChanged.emit(lo, hi)
 
     # ------------------------------------------------------------------
+    # Export controls
+    # ------------------------------------------------------------------
+
+    def _export_table_csv(self):
+        """Export statistics table to CSV - delegates to dock widget."""
+        # Find the parent HistogramDockWidget if it exists
+        parent = self.parent()
+        while parent is not None:
+            if hasattr(parent, '_export_table_csv_impl'):
+                parent._export_table_csv_impl()
+                return
+            parent = parent.parent()
+
+    def _save_histogram_png(self):
+        """Save the histogram as a high-DPI PNG image."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Histogram as PNG",
+            "",
+            "PNG Files (*.png)",
+        )
+        
+        if not file_path:
+            return
+        
+        # Ensure .png extension
+        if not file_path.endswith('.png'):
+            file_path += '.png'
+        
+        # Temporarily switch to export styling
+        self._style_axes(export_mode=True)
+        self.fig.canvas.draw_idle()
+        
+        # Save with high DPI
+        # transparent=True if not white background, False otherwise
+        use_transparent = not self._white_background
+        self.fig.savefig(
+            file_path,
+            dpi=300,
+            bbox_inches='tight',
+            transparent=use_transparent,
+            facecolor='white' if self._white_background else 'none',
+        )
+        
+        # Restore display styling
+        self._style_axes(export_mode=False)
+        self.fig.canvas.draw_idle()
+
+    # ------------------------------------------------------------------
     # Settings dialog
     # ------------------------------------------------------------------
 
@@ -682,17 +1151,37 @@ class HistogramWidget(QWidget):
         dlg = HistogramSettingsDialog(
             display_mode=self._display_mode,
             show_sd=self._show_sd,
+            central_tendency=self._central_tendency,
+            show_legend=self._show_legend,
             layer_labels=layer_labels,
             group_assignments=self._group_assignments,
+            layer_colors=self._layer_colors,
+            group_colors=self._group_colors,
+            group_names=self._group_names,
             parent=self,
         )
+        # Set white background and smooth curves checkbox state
+        dlg.white_bg_checkbox.setChecked(self._white_background)
+        dlg.smooth_checkbox.setChecked(self._smooth_curves)
+        
         if dlg.exec_() == QDialog.Accepted:
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
-            if dlg._group_combos:
+            self._central_tendency = (
+                dlg.central_tendency_combo.currentText()
+            )
+            self._show_legend = dlg.legend_checkbox.isChecked()
+            self._white_background = dlg.white_bg_checkbox.isChecked()
+            self._smooth_curves = dlg.smooth_checkbox.isChecked()
+            if dlg._group_row_data:
                 self._group_assignments = dlg.get_group_assignments()
+                self._group_colors = dlg.get_group_colors()
+                self._group_names = dlg.get_group_names()
+            if dlg._layer_color_buttons:
+                self._layer_colors = dlg.get_layer_colors()
             if self.counts is not None:
                 self._render()
+            self.dataChanged.emit()
 
     # ------------------------------------------------------------------
     # Public API
@@ -726,22 +1215,26 @@ class HistogramWidget(QWidget):
             self.show()
             return
 
-        # Clear multi-layer state (single-dataset mode)
-        self._datasets = {}
-        self._counts_per_dataset = {}
+        # Store as single-layer multi-dataset for consistent rendering
+        self._datasets = {"Layer": valid}
         self._raw_valid_data = valid
+        self._previous_dataset_count = 0
 
         self.counts, self.bin_edges = np.histogram(valid, bins=self.bins)
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
+        
+        # Populate counts per dataset for consistent rendering
+        self._counts_per_dataset = {"Layer": self.counts}
 
         self._render()
         self.show()
+        self.dataChanged.emit()
 
     def update_multi_data(self, datasets: dict) -> None:
         """Compute histograms from multiple datasets and render.
 
         Each dataset (one per layer) is stored individually so that
-        *Separate layers*, *Grouped*, and *Merged + SD* display modes
+        *Individual layers*, *Grouped*, and *Merged + SD* display modes
         can operate on per-layer counts.
 
         Parameters
@@ -784,8 +1277,15 @@ class HistogramWidget(QWidget):
             counts, _ = np.histogram(valid, bins=self.bin_edges)
             self._counts_per_dataset[label] = counts
 
+        # Enable Show SD by default when transitioning from single to multiple layers
+        current_count = len(self._datasets)
+        if current_count > 1 and self._previous_dataset_count <= 1:
+            self._show_sd = True
+        self._previous_dataset_count = current_count
+
         self._render()
         self.show()
+        self.dataChanged.emit()
 
     def update_colormap(
         self,
@@ -814,9 +1314,11 @@ class HistogramWidget(QWidget):
         self._datasets = {}
         self._counts_per_dataset = {}
         self._raw_valid_data = None
+        self._previous_dataset_count = 0
         self.ax.clear()
         self.fig.canvas.draw_idle()
         self.hide()
+        self.dataChanged.emit()
 
     @property
     def display_mode(self) -> str:
@@ -840,25 +1342,61 @@ class HistogramWidget(QWidget):
         if self.counts is not None:
             self._render()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    @property
+    def white_background(self) -> bool:
+        """Whether white background is enabled."""
+        return self._white_background
 
-    def _style_axes(self) -> None:
-        """Apply consistent styling to the axes and figure."""
-        self.ax.patch.set_alpha(0)
-        self.fig.patch.set_alpha(0)
+    @white_background.setter
+    def white_background(self, value: bool):
+        self._white_background = value
+        self._style_axes()
+        if self.counts is not None:
+            self._render()
+        self.dataChanged.emit()
+
+    def _style_axes(self, export_mode: bool = False) -> None:
+        """Apply consistent styling to the axes and figure.
+        
+        Parameters
+        ----------
+        export_mode : bool, optional
+            If True, use black colors suitable for export, by default False.
+        """
+        if export_mode:
+            # For export: use white or transparent bg, black text
+            if self._white_background:
+                self.ax.patch.set_facecolor('white')
+                self.ax.patch.set_alpha(1)
+                self.fig.patch.set_facecolor('white')
+                self.fig.patch.set_alpha(1)
+            else:
+                self.ax.patch.set_alpha(0)
+                self.fig.patch.set_alpha(0)
+            color = 'black'
+        else:
+            # For display: transparent bg, grey text
+            if self._white_background:
+                self.ax.patch.set_facecolor('white')
+                self.ax.patch.set_alpha(1)
+                self.fig.patch.set_facecolor('white')
+                self.fig.patch.set_alpha(1)
+            else:
+                self.ax.patch.set_alpha(0)
+                self.fig.patch.set_alpha(0)
+            color = 'grey'
+        
         for spine in self.ax.spines.values():
-            spine.set_color("grey")
+            spine.set_color(color)
             spine.set_linewidth(1)
-        self.ax.set_ylabel(self.ylabel, fontsize=6, color="grey")
-        self.ax.set_xlabel(self.xlabel, fontsize=6, color="grey")
+        self.ax.set_ylabel(self.ylabel, fontsize=6, color=color)
+        self.ax.set_xlabel(self.xlabel, fontsize=6, color=color)
         for which in ("major", "minor"):
             self.ax.tick_params(
-                axis="x", which=which, labelsize=7, colors="grey"
+                axis="x", which=which, labelsize=7, colors=color
             )
             self.ax.tick_params(
-                axis="y", which=which, labelsize=7, colors="grey"
+                axis="y", which=which, labelsize=7, colors=color
             )
 
     def _get_cmap_and_norm(self):
@@ -887,9 +1425,6 @@ class HistogramWidget(QWidget):
             )
         return cmap, norm
 
-    # ------------------------------------------------------------------
-    # Smoothing helper
-    # ------------------------------------------------------------------
 
     def _smooth_curve(self, y, sigma=2, upsample=5):
         """Return (x_fine, y_fine) with Gaussian-smoothed, upsampled data.
@@ -908,23 +1443,20 @@ class HistogramWidget(QWidget):
         x_fine : np.ndarray
         y_fine : np.ndarray
         """
-        y_smooth = gaussian_filter1d(y.astype(float), sigma=sigma)
-        x_fine = np.linspace(
-            self.bin_centers[0],
-            self.bin_centers[-1],
-            len(self.bin_centers) * upsample,
-        )
-        y_fine = np.interp(x_fine, self.bin_centers, y_smooth)
+        if self._smooth_curves:
+            y_smooth = gaussian_filter1d(y.astype(float), sigma=sigma)
+            x_fine = np.linspace(
+                self.bin_centers[0],
+                self.bin_centers[-1],
+                len(self.bin_centers) * upsample,
+            )
+            y_fine = np.interp(x_fine, self.bin_centers, y_smooth)
+        else:
+            # No smoothing: return bin centers and raw data
+            x_fine = self.bin_centers
+            y_fine = y.astype(float)
         return x_fine, y_fine
 
-    # ------------------------------------------------------------------
-    # Central-tendency vertical lines
-    # ------------------------------------------------------------------
-
-    def _on_central_tendency_changed(self, _text: str) -> None:
-        """Re-render when the central tendency selection changes."""
-        if self.counts is not None:
-            self._render()
 
     @staticmethod
     def _compute_central_tendency(
@@ -962,38 +1494,41 @@ class HistogramWidget(QWidget):
 
     def _draw_central_tendency_lines(self) -> None:
         """Draw vertical lines at the selected central-tendency statistic."""
-        choice = self._central_tendency_combo.currentText()
+        choice = self._central_tendency
         if choice == "None":
             return
 
+        default_colors = plt.cm.tab10.colors
         n_datasets = len(self._counts_per_dataset)
 
-        if n_datasets > 1 and self._display_mode == "Separate layers":
-            outline_colors = plt.cm.tab10.colors
+        if n_datasets > 1 and self._display_mode == "Individual layers":
             for idx, (label, valid) in enumerate(self._datasets.items()):
-                color = outline_colors[idx % len(outline_colors)]
+                default_c = default_colors[idx % len(default_colors)][:3]
+                color = self._layer_colors.get(label, default_c)
                 val = self._compute_central_tendency(
                     valid, choice, self.bin_centers, self.bin_edges
                 )
                 if val is not None:
                     self.ax.axvline(
-                        val, color=color, ls="--", lw=1, alpha=0.85
+                        val, color=color, ls="--", lw=2, alpha=0.85
                     )
         elif n_datasets > 1 and self._display_mode == "Grouped":
-            outline_colors = plt.cm.tab10.colors
             groups: dict[int, list] = {}
             for label, valid in self._datasets.items():
                 g = self._group_assignments.get(label, 1)
                 groups.setdefault(g, []).append(valid)
             for gidx, (gid, data_list) in enumerate(sorted(groups.items())):
-                color = outline_colors[gidx % len(outline_colors)]
+                default_c = default_colors[
+                    (gid - 1) % len(default_colors)
+                ][:3]
+                color = self._group_colors.get(gid, default_c)
                 pooled = np.concatenate(data_list)
                 val = self._compute_central_tendency(
                     pooled, choice, self.bin_centers, self.bin_edges
                 )
                 if val is not None:
                     self.ax.axvline(
-                        val, color=color, ls="--", lw=1, alpha=0.85
+                        val, color=color, ls="--", lw=2, alpha=0.85
                     )
         else:
             # Merged or single-dataset
@@ -1006,12 +1541,9 @@ class HistogramWidget(QWidget):
                 )
                 if val is not None:
                     self.ax.axvline(
-                        val, color="white", ls="--", lw=1, alpha=0.85
+                        val, color="white", ls="--", lw=2, alpha=0.85
                     )
 
-    # ------------------------------------------------------------------
-    # Rendering
-    # ------------------------------------------------------------------
 
     def _render(self) -> None:
         """Re-draw the histogram using the active display mode."""
@@ -1019,15 +1551,15 @@ class HistogramWidget(QWidget):
 
         n_datasets = len(self._counts_per_dataset)
 
-        if n_datasets > 1:
-            if self._display_mode == "Separate layers":
-                self._render_separate()
+        if n_datasets >= 1:
+            if self._display_mode == "Individual layers":
+                self._render_individual()
             elif self._display_mode == "Grouped":
                 self._render_grouped()
             else:
                 self._render_merged()
         else:
-            # Single dataset or update_data() path – colormap bars
+            # No datasets at all
             self._render_bars()
 
         self._draw_central_tendency_lines()
@@ -1037,29 +1569,99 @@ class HistogramWidget(QWidget):
     def _render_bars(self) -> None:
         """Render the standard colormap-colored bar histogram."""
         cmap, norm = self._get_cmap_and_norm()
-        # invisible line keeps axes auto-scaled correctly
-        self.ax.plot(
-            self.bin_centers, self.counts, color="none", alpha=0
+        x = self.bin_centers
+        y = self.counts.astype(float)
+        self._fill_gradient(x, y, np.zeros_like(y), cmap, norm, alpha=0.7)
+
+    def _fill_gradient(
+        self,
+        x: np.ndarray,
+        y_upper: np.ndarray,
+        y_lower: np.ndarray,
+        cmap,
+        norm,
+        *,
+        alpha: float = 0.8,
+    ) -> None:
+        """Fill between *y_lower* and *y_upper* with a smooth colormap gradient.
+
+        Uses a single ``imshow`` call clipped to a polygon, which is
+        dramatically faster than hundreds of individual ``fill_between``
+        calls and produces a perfectly seamless gradient.
+        """
+        if len(x) < 2:
+            return
+
+        y_max = float(np.max(y_upper))
+        y_min = float(np.min(y_lower))
+        if y_max <= y_min:
+            y_max = y_min + 1  # avoid zero-height extent
+
+        # Build a 1-row gradient image mapped through the colormap
+        n_pixels = 256
+        gradient_values = np.linspace(
+            float(x[0]), float(x[-1]), n_pixels
+        ).reshape(1, -1)
+        extent = [float(x[0]), float(x[-1]), y_min, y_max * 1.02]
+
+        im = self.ax.imshow(
+            gradient_values,
+            aspect="auto",
+            extent=extent,
+            origin="lower",
+            cmap=cmap,
+            norm=norm,
+            alpha=alpha,
+            interpolation="bilinear",
         )
-        for count, bin_start, bin_end in zip(
-            self.counts, self.bin_edges[:-1], self.bin_edges[1:]
-        ):
-            bin_center = (bin_start + bin_end) / 2
-            color = cmap(norm(bin_center))
-            self.ax.fill_between(
-                [bin_start, bin_end], 0, count, color=color, alpha=0.7
-            )
+
+        # Build a closed polygon: upper curve forward, lower curve backward
+        verts_x = np.concatenate([x, x[::-1]])
+        verts_y = np.concatenate([y_upper, y_lower[::-1]])
+        verts = np.column_stack([verts_x, verts_y])
+        clip_poly = MplPolygon(
+            verts, closed=True, transform=self.ax.transData
+        )
+        im.set_clip_path(clip_poly)
+
+        # Set axes limits so the curve is visible
+        self.ax.set_xlim(float(x[0]), float(x[-1]))
+        self.ax.set_ylim(0, y_max * 1.05)
+
+    def _draw_gradient_line(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        cmap,
+        norm,
+        *,
+        linewidth: float = 2,
+    ) -> None:
+        """Draw a line colored by a smooth colormap gradient.
+
+        Uses a ``LineCollection`` for efficient per-segment coloring.
+        """
+        from matplotlib.collections import LineCollection
+
+        if len(x) < 2:
+            return
+        points = np.column_stack([x, y]).reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        colors = cmap(norm(x[:-1]))
+        lc = LineCollection(segments, colors=colors, linewidths=linewidth)
+        self.ax.add_collection(lc)
 
     def _render_merged(self) -> None:
         """Render merged histogram with optional SD shading.
 
-        Uses Gaussian smoothing + upsampling for seamless color
-        transitions in both the line and the shaded SD band.
+        Uses ``imshow`` with polygon clipping for seamless color-mapped
+        gradient fills, and ``LineCollection`` for efficient line rendering.
         """
         cmap, norm = self._get_cmap_and_norm()
         n = len(self._counts_per_dataset)
 
         if self._show_sd and n > 1:
+            # Multiple layers with SD: show mean line + SD shaded area
             all_counts = np.array(
                 list(self._counts_per_dataset.values()), dtype=float
             )
@@ -1068,50 +1670,72 @@ class HistogramWidget(QWidget):
             lower = np.maximum(mean_counts - std_counts, 0)
             upper = mean_counts + std_counts
 
-            # Smooth + upsample for a seamless look
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             _, lower_fine = self._smooth_curve(lower)
             _, upper_fine = self._smooth_curve(upper)
 
-            # Many fine coloured segments → imperceptible transitions
-            for i in range(len(x_fine) - 1):
-                x0, x1 = x_fine[i], x_fine[i + 1]
-                color = cmap(norm(x0))
-                self.ax.fill_between(
-                    [x0, x1],
-                    [lower_fine[i], lower_fine[i + 1]],
-                    [upper_fine[i], upper_fine[i + 1]],
-                    color=color,
-                    alpha=0.35,
-                    linewidth=0,
-                )
-                self.ax.plot(
-                    [x0, x1],
-                    [mean_fine[i], mean_fine[i + 1]],
-                    color=color,
-                    linewidth=1.5,
-                )
+            # Gradient-filled SD band
+            self._fill_gradient(
+                x_fine, upper_fine, lower_fine, cmap, norm, alpha=0.35
+            )
+            # Gradient-colored mean line
+            self._draw_gradient_line(
+                x_fine, mean_fine, cmap, norm, linewidth=2
+            )
+        elif self._show_sd and n == 1:
+            # Single layer with SD: show only the gradient line
+            counts = list(self._counts_per_dataset.values())[0]
+            x_fine, y_fine = self._smooth_curve(counts)
+            self._draw_gradient_line(
+                x_fine, y_fine, cmap, norm, linewidth=2
+            )
+            self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
+            self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
         else:
-            self._render_bars()
+            # No SD (single or multiple layers): filled area under curve
+            if n > 1:
+                all_counts = np.array(
+                    list(self._counts_per_dataset.values()), dtype=float
+                )
+                mean_counts = np.mean(all_counts, axis=0)
+            else:
+                mean_counts = list(self._counts_per_dataset.values())[0]
 
-    def _render_separate(self) -> None:
+            x_fine, mean_fine = self._smooth_curve(mean_counts)
+
+            # Seamless gradient fill under the curve
+            self._fill_gradient(
+                x_fine,
+                mean_fine,
+                np.zeros_like(mean_fine),
+                cmap,
+                norm,
+                alpha=0.8,
+            )
+            # Gradient-colored outline on top
+            self._draw_gradient_line(
+                x_fine, mean_fine, cmap, norm, linewidth=2
+            )
+
+    def _render_individual(self) -> None:
         """Render each dataset as a smooth outline."""
-        outline_colors = plt.cm.tab10.colors
+        default_colors = plt.cm.tab10.colors
         for idx, (label, counts) in enumerate(
             self._counts_per_dataset.items()
         ):
-            color = outline_colors[idx % len(outline_colors)]
+            default_c = default_colors[idx % len(default_colors)][:3]
+            color = self._layer_colors.get(label, default_c)
             x_fine, y_fine = self._smooth_curve(counts)
             self.ax.plot(
                 x_fine, y_fine,
-                color=color, linewidth=1.5, label=label,
+                color=color, linewidth=2, label=label,
             )
-        if self._counts_per_dataset:
+        if self._show_legend and self._counts_per_dataset:
             self.ax.legend(fontsize=5, loc="upper right")
 
     def _render_grouped(self) -> None:
         """Render grouped histograms with smooth curves and optional SD."""
-        outline_colors = plt.cm.tab10.colors
+        default_colors = plt.cm.tab10.colors
 
         groups: dict[int, list[tuple[str, np.ndarray]]] = {}
         for label, counts in self._counts_per_dataset.items():
@@ -1119,15 +1743,20 @@ class HistogramWidget(QWidget):
             groups.setdefault(g, []).append((label, counts))
 
         for gidx, (group_id, members) in enumerate(sorted(groups.items())):
-            color = outline_colors[gidx % len(outline_colors)]
+            default_c = default_colors[
+                (group_id - 1) % len(default_colors)
+            ][:3]
+            color = self._group_colors.get(group_id, default_c)
             all_counts = np.array([c for _, c in members], dtype=float)
             mean_counts = np.mean(all_counts, axis=0)
 
             x_fine, mean_fine = self._smooth_curve(mean_counts)
-            group_label = f"Group {group_id}"
+            group_label = self._group_names.get(
+                group_id, f"Group {group_id}"
+            )
             self.ax.plot(
                 x_fine, mean_fine,
-                color=color, linewidth=1.5, label=group_label,
+                color=color, linewidth=2, label=group_label,
             )
 
             if self._show_sd and len(members) > 1:
@@ -1141,5 +1770,349 @@ class HistogramWidget(QWidget):
                     color=color, alpha=0.25, linewidth=0,
                 )
 
-        if groups:
+        if self._show_legend and groups:
             self.ax.legend(fontsize=5, loc="upper right")
+
+
+class CollapsibleSection(QWidget):
+    """A collapsible section with a clickable header and hideable content.
+
+    Parameters
+    ----------
+    title : str
+        Header text displayed on the toggle button.
+    initially_collapsed : bool, optional
+        Whether the content starts hidden, by default ``True``.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    def __init__(self, title="Section", initially_collapsed=True, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Clickable header with disclosure triangle
+        self._toggle_button = QPushButton()
+        self._toggle_button.setStyleSheet(
+            "QPushButton { text-align: left; border: none; padding: 4px; "
+            "font-weight: bold; color: grey; }"
+        )
+        self._toggle_button.setCheckable(True)
+        self._toggle_button.setChecked(not initially_collapsed)
+        self._toggle_button.clicked.connect(self._on_toggle)
+        layout.addWidget(self._toggle_button)
+
+        # Content area
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._content)
+
+        self._title = title
+        self._update_button_text()
+        self._content.setVisible(not initially_collapsed)
+
+    def _update_button_text(self):
+        """Update the button text with a disclosure triangle."""
+        arrow = "\u25BC" if self._toggle_button.isChecked() else "\u25B6"
+        self._toggle_button.setText(f"{arrow} {self._title}")
+
+    def _on_toggle(self):
+        """Toggle content visibility when the header is clicked."""
+        self._content.setVisible(self._toggle_button.isChecked())
+        self._update_button_text()
+
+    def add_widget(self, widget):
+        """Add a widget to the collapsible content area."""
+        self._content_layout.addWidget(widget)
+
+    def set_content_visible(self, visible):
+        """Programmatically expand or collapse the section."""
+        self._toggle_button.setChecked(visible)
+        self._content.setVisible(visible)
+        self._update_button_text()
+
+
+class StatisticsTableWidget(QTableWidget):
+    """Table showing statistics (Mean, Median, Center of Mass, Std Dev).
+
+    Each row corresponds to a named dataset (layer or group).
+
+    Parameters
+    ----------
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    COLUMNS = ["Name",  "Center of Mass", "Mean", "Median", "Std Dev"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setColumnCount(len(self.COLUMNS))
+        self.setHorizontalHeaderLabels(self.COLUMNS)
+        self.horizontalHeader().setStretchLastSection(True)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.setSelectionMode(QTableWidget.NoSelection)
+        self.verticalHeader().setVisible(False)
+        self.setMaximumHeight(200)
+        # Style to match the dark theme
+        self.setStyleSheet(
+            "QTableWidget { background: transparent; color: grey; "
+            "gridline-color: #555; }"
+            "QHeaderView::section { background: transparent; color: grey; "
+            "border: 1px solid #555; font-size: 10px; }"
+        )
+
+    def update_statistics(self, datasets, bin_centers=None, bin_edges=None):
+        """Update table rows from a ``{name: 1-D array}`` mapping.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` mapping names to data arrays.
+        bin_centers : np.ndarray, optional
+            Bin centres for center-of-mass computation.
+        bin_edges : np.ndarray, optional
+            Bin edges for center-of-mass computation.
+        """
+        self.setRowCount(len(datasets))
+        for row, (name, data) in enumerate(datasets.items()):
+            flat = np.asarray(data).ravel()
+            valid = flat[~np.isnan(flat) & np.isfinite(flat)]
+
+            if len(valid) > 0:
+                mean_val = float(np.mean(valid))
+                median_val = float(np.median(valid))
+                std_val = float(np.std(valid))
+
+                # Center of mass
+                if bin_centers is not None and bin_edges is not None:
+                    counts, _ = np.histogram(valid, bins=bin_edges)
+                    total = counts.sum()
+                    com_val = (
+                        float(np.sum(bin_centers * counts) / total)
+                        if total > 0
+                        else float("nan")
+                    )
+                else:
+                    com_val = mean_val  # fallback
+            else:
+                mean_val = median_val = com_val = std_val = float("nan")
+
+            self.setItem(row, 0, QTableWidgetItem(str(name)))
+            self.setItem(row, 1, QTableWidgetItem(f"{mean_val:.4f}"))
+            self.setItem(row, 2, QTableWidgetItem(f"{median_val:.4f}"))
+            self.setItem(row, 3, QTableWidgetItem(f"{com_val:.4f}"))
+            self.setItem(row, 4, QTableWidgetItem(f"{std_val:.4f}"))
+
+    def update_group_statistics(
+        self, datasets, group_assignments, group_names=None,
+        bin_centers=None, bin_edges=None,
+    ):
+        """Update table rows with per-group pooled statistics.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` mapping layer names to data arrays.
+        group_assignments : dict
+            ``{label: group_int}`` mapping layer names to group IDs.
+        group_names : dict, optional
+            ``{group_int: str}`` mapping group IDs to display names.
+        bin_centers : np.ndarray, optional
+            Bin centres for center-of-mass computation.
+        bin_edges : np.ndarray, optional
+            Bin edges for center-of-mass computation.
+        """
+        if group_names is None:
+            group_names = {}
+        groups = {}
+        for label, data in datasets.items():
+            gid = group_assignments.get(label, 1)
+            groups.setdefault(gid, []).append(data)
+
+        pooled_datasets = {}
+        for gid in sorted(groups):
+            pooled = np.concatenate(groups[gid])
+            name = group_names.get(gid, f"Group {gid}")
+            pooled_datasets[name] = pooled
+
+        self.update_statistics(pooled_datasets, bin_centers, bin_edges)
+
+
+class HistogramDockWidget(QWidget):
+    """Dockable container that wraps a :class:`HistogramWidget` with
+    collapsible statistics tables underneath.
+
+    This widget is intended to be added as a separate napari dock widget
+    so that it can be detached into its own window.
+
+    Parameters
+    ----------
+    histogram_widget : HistogramWidget
+        The histogram widget to wrap.  Ownership is transferred to this
+        container (Qt reparents the widget).
+    title : str, optional
+        Human-readable title, by default ``"Histogram & Statistics"``.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    def __init__(
+        self,
+        histogram_widget: "HistogramWidget",
+        title: str = "Histogram & Statistics",
+        parent: QWidget = None,
+    ):
+        super().__init__(parent)
+        self._title = title
+        self.histogram_widget = histogram_widget
+
+        # Ensure the dock widget is at least tall enough for histogram + buttons
+        self.setMinimumHeight(300)
+
+        # Main layout for this widget
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Content widget inside scroll area
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Embed the histogram widget
+        layout.addWidget(histogram_widget)
+
+        # --- Layer statistics (collapsible) ---
+        self.layer_stats_section = CollapsibleSection(
+            "Layer Statistics", initially_collapsed=True
+        )
+        self.layer_stats_table = StatisticsTableWidget()
+        self.layer_stats_section.add_widget(self.layer_stats_table)
+        layout.addWidget(self.layer_stats_section)
+
+        # --- Group statistics (collapsible, only visible when grouped) ---
+        self.group_stats_section = CollapsibleSection(
+            "Group Statistics", initially_collapsed=True
+        )
+        self.group_stats_table = StatisticsTableWidget()
+        self.group_stats_section.add_widget(self.group_stats_table)
+        layout.addWidget(self.group_stats_section)
+        self.group_stats_section.setVisible(False)
+
+        layout.addStretch()
+
+        # Set content widget to scroll area
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
+
+        # React to histogram data / settings changes
+        histogram_widget.dataChanged.connect(self._update_statistics)
+
+    # ------------------------------------------------------------------
+    # Statistics refresh
+    # ------------------------------------------------------------------
+
+    def _update_statistics(self):
+        """Recompute the statistics tables from the histogram's data."""
+        hw = self.histogram_widget
+
+        has_multi = bool(hw._datasets)
+        has_single = (
+            hw._raw_valid_data is not None and len(hw._raw_valid_data) > 0
+        )
+
+        if has_multi:
+            self.layer_stats_table.update_statistics(
+                hw._datasets, hw.bin_centers, hw.bin_edges
+            )
+            self.layer_stats_section.setVisible(True)
+
+            # Show group stats only when in Grouped mode
+            if hw._display_mode == "Grouped" and hw._group_assignments:
+                self.group_stats_table.update_group_statistics(
+                    hw._datasets,
+                    hw._group_assignments,
+                    group_names=hw._group_names,
+                    bin_centers=hw.bin_centers,
+                    bin_edges=hw.bin_edges,
+                )
+                self.group_stats_section.setVisible(True)
+            else:
+                self.group_stats_section.setVisible(False)
+        elif has_single:
+            self.layer_stats_table.update_statistics(
+                {"Data": hw._raw_valid_data}, hw.bin_centers, hw.bin_edges
+            )
+            self.layer_stats_section.setVisible(True)
+            self.group_stats_section.setVisible(False)
+        else:
+            self.layer_stats_section.setVisible(False)
+            self.group_stats_section.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Export functionality
+    # ------------------------------------------------------------------
+
+    def _export_table_csv_impl(self):
+        """Export the visible statistics table(s) to CSV file(s)."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Statistics as CSV",
+            "",
+            "CSV Files (*.csv)",
+        )
+        
+        if not file_path:
+            return
+        
+        # Ensure .csv extension
+        if not file_path.endswith('.csv'):
+            file_path += '.csv'
+        
+        # Export layer statistics if visible
+        if self.layer_stats_section.isVisible():
+            self._write_table_to_csv(self.layer_stats_table, file_path)
+        
+        # If group stats are also visible, save to a separate file
+        if self.group_stats_section.isVisible():
+            group_file = file_path.replace('.csv', '_groups.csv')
+            self._write_table_to_csv(self.group_stats_table, group_file)
+    
+    def _write_table_to_csv(self, table: QTableWidget, file_path: str):
+        """Write a QTableWidget to a CSV file.
+        
+        Parameters
+        ----------
+        table : QTableWidget
+            The table widget to export.
+        file_path : str
+            Path to the output CSV file.
+        """
+        import csv
+        
+        with open(file_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Write header
+            headers = []
+            for col in range(table.columnCount()):
+                headers.append(table.horizontalHeaderItem(col).text())
+            writer.writerow(headers)
+            
+            # Write data rows
+            for row in range(table.rowCount()):
+                row_data = []
+                for col in range(table.columnCount()):
+                    item = table.item(row, col)
+                    row_data.append(item.text() if item else '')
+                writer.writerow(row_data)
