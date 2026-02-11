@@ -635,6 +635,19 @@ class LifetimeWidget(QWidget):
         self.lifetime_layers = []
         self.lifetime_layer = None
 
+        # Suppress layer-event processing while we add/remove lifetime
+        # layers so that each viewer.add_layer / .remove does not trigger
+        # a full reset_layer_choices → on_image_layer_changed cascade.
+        self.parent_widget._suppress_layer_events = True
+        try:
+            self._create_lifetime_layers_batch(selected_layers)
+        finally:
+            self.parent_widget._suppress_layer_events = False
+            # One single refresh of the layer list now that we are done.
+            self.parent_widget.reset_layer_choices()
+
+    def _create_lifetime_layers_batch(self, selected_layers):
+        """Internal: create all lifetime layers without triggering events."""
         for layer in selected_layers:
             if 'lifetime_data' not in layer.metadata:
                 continue
@@ -714,14 +727,18 @@ class LifetimeWidget(QWidget):
                 vmax=self.colormap_contrast_limits[1],
             )
 
-        for count, bin_start, bin_end in zip(
-            self.counts, self.bin_edges[:-1], self.bin_edges[1:]
-        ):
-            bin_center = (bin_start + bin_end) / 2
-            color = cmap(norm(bin_center))
-            self.hist_ax.fill_between(
-                [bin_start, bin_end], 0, count, color=color, alpha=0.7
-            )
+        # Vectorized: compute all bar colors at once and draw a single bar call
+        widths = self.bin_edges[1:] - self.bin_edges[:-1]
+        colors = cmap(norm(self.bin_centers))
+        colors[:, 3] = 0.7  # alpha
+        self.hist_ax.bar(
+            self.bin_centers,
+            self.counts,
+            width=widths,
+            color=colors,
+            align='center',
+            edgecolor='none',
+        )
 
         self.style_histogram_axes()
 

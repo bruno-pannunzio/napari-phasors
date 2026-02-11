@@ -46,7 +46,15 @@ class CheckableComboBox(QComboBox):
     """A ComboBox with checkable items for multi-selection.
 
     Displays selected items as comma-separated text and emits
-    selectionChanged signal when items are checked/unchecked.
+    ``selectionChanged`` signal when the user finishes changing the
+    selection.
+
+    Signal strategy:
+    * **Popup open** – changes accumulate; ``selectionChanged`` is emitted
+      once when the popup closes.
+    * **Popup closed / programmatic** – ``selectionChanged`` is emitted
+      immediately (no debounce needed because programmatic callers
+      handle batching themselves via ``blockSignals``).
     """
 
     selectionChanged = Signal()
@@ -64,34 +72,56 @@ class CheckableComboBox(QComboBox):
         # Connect model signals
         self.model().dataChanged.connect(self._on_data_changed)
 
-        # Track if we're inside the popup
+        # Track popup state
         self._popup_visible = False
+        self._selection_dirty = False
 
         # Make the line edit clickable to open popup
         self.lineEdit().installEventFilter(self)
-        # Prevent cursor positioning in line edit
         self.lineEdit().setFocusPolicy(Qt.NoFocus)
 
         # Install event filter on view to handle item clicks
         self.view().viewport().installEventFilter(self)
 
+    # ------------------------------------------------------------------
+    # Bulk actions (called externally, e.g. from buttons in the layout)
+    # ------------------------------------------------------------------
+
+    def selectAll(self):
+        """Check all items (emits one selectionChanged)."""
+        self.blockSignals(True)
+        for i in range(self.model().rowCount()):
+            self.model().item(i).setCheckState(Qt.Checked)
+        self.blockSignals(False)
+        self._update_display_text()
+        self.selectionChanged.emit()
+
+    def deselectAll(self):
+        """Uncheck all items (emits one selectionChanged)."""
+        self.blockSignals(True)
+        for i in range(self.model().rowCount()):
+            self.model().item(i).setCheckState(Qt.Unchecked)
+        self.blockSignals(False)
+        self._update_display_text()
+        self.selectionChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Event handling
+    # ------------------------------------------------------------------
+
     def eventFilter(self, obj, event):
         """Filter events to make line edit clickable and handle item clicks."""
         if obj == self.lineEdit():
             if event.type() == event.MouseButtonRelease:
-                # Toggle popup on mouse release
                 if not self.view().isVisible():
                     self.showPopup()
                 return True
             elif event.type() == event.MouseButtonPress:
-                # Consume press event to prevent default behavior
                 return True
         elif obj == self.view().viewport():
             if event.type() == event.MouseButtonRelease:
-                # Get the index of the clicked item
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
-                    # Toggle the check state
                     item = self.model().itemFromIndex(index)
                     if item:
                         current_state = item.checkState()
@@ -103,6 +133,10 @@ class CheckableComboBox(QComboBox):
                         item.setCheckState(new_state)
                     return True
         return super().eventFilter(obj, event)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def addItem(self, text, checked=False):
         """Add a checkable item to the combobox."""
@@ -122,6 +156,10 @@ class CheckableComboBox(QComboBox):
         """Clear all items."""
         self.model().clear()
         self._update_display_text()
+
+    def count(self):
+        """Return the number of data items."""
+        return self.model().rowCount()
 
     def checkedItems(self):
         """Return list of checked item texts."""
@@ -144,11 +182,31 @@ class CheckableComboBox(QComboBox):
         self.blockSignals(False)
         self._update_display_text()
 
+    # ------------------------------------------------------------------
+    # Signal logic
+    # ------------------------------------------------------------------
+
     def _on_data_changed(self, topLeft, bottomRight, roles):
         """Handle item check state changes."""
-        if Qt.CheckStateRole in roles:
-            self._update_display_text()
+        if Qt.CheckStateRole not in roles:
+            return
+        self._update_display_text()
+        if self.signalsBlocked():
+            return
+        if self._popup_visible:
+            # Accumulate; emit once on popup close
+            self._selection_dirty = True
+        else:
+            # Programmatic or non-popup change — emit now
             self.selectionChanged.emit()
+
+    def stop_pending_selection(self):
+        """Cancel any pending selectionChanged emission."""
+        self._selection_dirty = False
+
+    # ------------------------------------------------------------------
+    # Display helpers
+    # ------------------------------------------------------------------
 
     def _update_display_text(self):
         """Update the display text to show checked items."""
@@ -164,12 +222,17 @@ class CheckableComboBox(QComboBox):
     def showPopup(self):
         """Show the popup and track visibility."""
         self._popup_visible = True
+        self._selection_dirty = False
         super().showPopup()
 
     def hidePopup(self):
-        """Hide the popup."""
+        """Hide the popup and emit selectionChanged if anything changed."""
+        was_dirty = self._selection_dirty
         self._popup_visible = False
+        self._selection_dirty = False
         super().hidePopup()
+        if was_dirty:
+            self.selectionChanged.emit()
 
     def itemCheckState(self, index):
         """Get the check state of item at index."""
@@ -319,12 +382,40 @@ class PlotterWidget(QWidget):
         image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
         image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
         image_layer_layout.addWidget(QLabel("Image Layers:"))
+
         self.image_layers_checkable_combobox = CheckableComboBox()
         self.image_layers_checkable_combobox.setMaximumHeight(25)
         self.image_layers_checkable_combobox.setToolTip(
             "Select one or more layers to plot. Check multiple layers to merge their phasor data in the plot."
         )
         image_layer_layout.addWidget(self.image_layers_checkable_combobox, 1)
+
+        # "All | None" clickable labels for quick bulk selection
+        select_all_label = QLabel('<a href="all" style="color: gray;">All</a>')
+        select_all_label.setTextFormat(Qt.RichText)
+        select_all_label.setCursor(Qt.PointingHandCursor)
+        select_all_label.setToolTip("Select all layers")
+        image_layer_layout.addWidget(select_all_label)
+
+        separator_label = QLabel("|")
+        separator_label.setStyleSheet("color: gray;")
+        image_layer_layout.addWidget(separator_label)
+
+        deselect_all_label = QLabel(
+            '<a href="none" style="color: gray;">None</a>'
+        )
+        deselect_all_label.setTextFormat(Qt.RichText)
+        deselect_all_label.setCursor(Qt.PointingHandCursor)
+        deselect_all_label.setToolTip("Deselect all layers")
+        image_layer_layout.addWidget(deselect_all_label)
+
+        # Connect All/None labels (use lambdas to consume the href argument)
+        select_all_label.linkActivated.connect(
+            lambda _: self.image_layers_checkable_combobox.selectAll()
+        )
+        deselect_all_label.linkActivated.connect(
+            lambda _: self.image_layers_checkable_combobox.deselectAll()
+        )
 
         image_layer_widget = QWidget()
         image_layer_widget.setLayout(image_layer_layout)
@@ -399,6 +490,14 @@ class PlotterWidget(QWidget):
         self._updating_plot = False
         self._updating_settings = False
 
+        # Flag to suppress layer event processing (e.g. while creating
+        # lifetime layers that are NOT phasor data layers).
+        self._suppress_layer_events = False
+
+        # Lazy tab loading: track which tabs need refresh after layer change
+        self._stale_tabs = set()
+        self.STALE_MARKER = " \u27F3"  # ⟳ symbol
+
         # Create Settings tab
         self.settings_tab = QWidget()
         self.settings_tab.setLayout(QVBoxLayout())
@@ -421,9 +520,20 @@ class PlotterWidget(QWidget):
         self._create_lifetime_tab()
         self._create_fret_tab()
 
-        # Connect napari signals when new layer is inseted or removed
+        # Debounce timer for reset_layer_choices so that rapid
+        # remove events (e.g. closing napari) are batched.
+        self._reset_layer_timer = QTimer()
+        self._reset_layer_timer.setSingleShot(True)
+        self._reset_layer_timer.setInterval(100)
+        self._reset_layer_timer.timeout.connect(self.reset_layer_choices)
+
+        # Connect napari signals when new layer is inserted or removed.
+        # Inserts are handled synchronously (usually one at a time);
+        # removals are debounced to avoid an N^2 cascade when closing.
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
-        self.viewer.layers.events.removed.connect(self.reset_layer_choices)
+        self.viewer.layers.events.removed.connect(
+            self._schedule_reset_layer_choices
+        )
 
         # Connect callbacks
         self.image_layers_checkable_combobox.selectionChanged.connect(
@@ -627,7 +737,7 @@ class PlotterWidget(QWidget):
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
-        if layer_name:
+        if layer_name and layer_name in self.viewer.layers:
             layer = self.viewer.layers[layer_name]
             if 'settings' not in layer.metadata:
                 layer.metadata['settings'] = {}
@@ -821,7 +931,12 @@ class PlotterWidget(QWidget):
         return []
 
     def _restore_all_tab_analyses(self, selected_tabs=None):
-        """Restore only selected tab analyses."""
+        """Restore only selected tab analyses.
+
+        This is used when importing settings, so it deliberately runs
+        each tab's handler immediately (bypassing lazy loading) and
+        clears the stale state for the processed tabs.
+        """
         if selected_tabs is None:
             selected_tabs = [
                 "settings_tab",
@@ -845,16 +960,23 @@ class PlotterWidget(QWidget):
         if "filter_tab" in selected_tabs and hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
             self.filter_tab.apply_button_clicked()
+            self._stale_tabs.discard(self.filter_tab)
         if "components_tab" in selected_tabs and hasattr(
             self, 'components_tab'
         ):
             self.components_tab._on_image_layer_changed()
+            self._stale_tabs.discard(self.components_tab)
         if "lifetime_tab" in selected_tabs and hasattr(self, 'lifetime_tab'):
             self.lifetime_tab._on_image_layer_changed()
+            self._stale_tabs.discard(self.lifetime_tab)
         if "fret_tab" in selected_tabs and hasattr(self, 'fret_tab'):
             self.fret_tab._on_image_layer_changed()
+            self._stale_tabs.discard(self.fret_tab)
         if "selection_tab" in selected_tabs and hasattr(self, 'selection_tab'):
             self.selection_tab._on_image_layer_changed()
+            self._stale_tabs.discard(self.selection_tab)
+
+        self._update_tab_stale_indicators()
 
         current_tab_index = self.tab_widget.currentIndex()
         self._on_tab_changed(current_tab_index)
@@ -1045,14 +1167,76 @@ class PlotterWidget(QWidget):
         self.plot()
 
     def _on_tab_changed(self, index):
-        """Handle tab change events to show/hide tab-specific lines."""
+        """Handle tab change events to show/hide tab-specific lines.
+
+        Also triggers lazy loading: if the tab is stale (marked after a
+        layer change), its ``_on_image_layer_changed`` is called now and
+        the stale indicator is removed.
+        """
         current_tab = self.tab_widget.widget(index)
 
         self._hide_all_tab_artists()
 
+        # Lazy-load stale tab data on first visit after layer change
+        if current_tab in self._stale_tabs:
+            self._refresh_stale_tab(current_tab)
+
         self._show_tab_artists(current_tab)
 
         self.canvas_widget.figure.canvas.draw_idle()
+
+    # ------------------------------------------------------------------
+    # Lazy tab loading helpers
+    # ------------------------------------------------------------------
+
+    def _mark_all_tabs_stale(self):
+        """Mark all analysis tabs as needing refresh.
+
+        Called after a layer change so that heavy per-tab processing is
+        deferred until the user actually switches to that tab.
+        """
+        for attr in [
+            'filter_tab',
+            'selection_tab',
+            'components_tab',
+            'lifetime_tab',
+            'fret_tab',
+        ]:
+            tab = getattr(self, attr, None)
+            if tab is not None:
+                self._stale_tabs.add(tab)
+        self._update_tab_stale_indicators()
+
+    def _refresh_stale_tab(self, tab):
+        """Run the deferred ``_on_image_layer_changed`` for *tab* and clear its stale state."""
+        if tab == getattr(self, 'filter_tab', None):
+            self.filter_tab._on_image_layer_changed()
+        elif tab == getattr(self, 'selection_tab', None):
+            self.selection_tab._on_image_layer_changed()
+        elif tab == getattr(self, 'components_tab', None):
+            self.components_tab._on_image_layer_changed()
+        elif tab == getattr(self, 'lifetime_tab', None):
+            self.lifetime_tab._on_image_layer_changed()
+        elif tab == getattr(self, 'fret_tab', None):
+            self.fret_tab._on_image_layer_changed()
+        self._stale_tabs.discard(tab)
+        self._update_tab_stale_indicators()
+
+    def _update_tab_stale_indicators(self):
+        """Update tab titles: append a ⟳ marker on stale tabs, remove it on fresh ones."""
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            current_text = self.tab_widget.tabText(i)
+            clean_text = current_text.replace(self.STALE_MARKER, "")
+            if tab in self._stale_tabs:
+                self.tab_widget.setTabText(i, clean_text + self.STALE_MARKER)
+            else:
+                self.tab_widget.setTabText(i, clean_text)
+
+    def _clear_all_stale(self):
+        """Remove stale state from all tabs (e.g. after a full import)."""
+        self._stale_tabs.clear()
+        self._update_tab_stale_indicators()
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
@@ -1514,7 +1698,7 @@ class PlotterWidget(QWidget):
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             self._broadcast_frequency_value_across_tabs("")
             return
 
@@ -1769,16 +1953,35 @@ class PlotterWidget(QWidget):
         except (TypeError, AttributeError):
             pass
 
-    def reset_layer_choices(self):
+    def _schedule_reset_layer_choices(self, event=None):
+        """Schedule a debounced reset of layer choices.
+
+        Multiple rapid insert/remove events (e.g. when closing napari
+        with many layers) are collapsed into a single
+        ``reset_layer_choices`` call after a short delay.
+        """
+        if self._suppress_layer_events:
+            return
+        self._reset_layer_timer.start()
+
+    def reset_layer_choices(self, event=None):
         """Reset the image layer checkable combobox choices."""
+        if self._suppress_layer_events:
+            return
         if getattr(self, '_resetting_layer_choices', False):
             return
 
         self._resetting_layer_choices = True
 
         try:
-            # Store current selection
-            previously_selected = self.get_selected_layer_names()
+            # Store current selection, filtered to layers that still exist
+            # in the viewer (a debounced removal may have left stale names).
+            existing_layer_names = {l.name for l in self.viewer.layers}
+            previously_selected = [
+                name
+                for name in self.get_selected_layer_names()
+                if name in existing_layer_names
+            ]
             mask_layer_combobox_current_text = (
                 self.mask_layer_combobox.currentText()
             )
@@ -1831,6 +2034,11 @@ class PlotterWidget(QWidget):
 
             self.image_layers_checkable_combobox.blockSignals(False)
             self.mask_layer_combobox.blockSignals(False)
+
+            # Cancel any debounced selectionChanged that was queued
+            # while signals were blocked — we handle the update
+            # synchronously below.
+            self.image_layers_checkable_combobox.stop_pending_selection()
 
             # If mask layer was deleted, trigger the cleanup
             if mask_layer_was_deleted:
@@ -1895,7 +2103,7 @@ class PlotterWidget(QWidget):
             self._update_grid_view(selected_layers)
 
             layer_name = self.get_primary_layer_name()
-            if layer_name == "":
+            if layer_name == "" or layer_name not in self.viewer.layers:
                 self._g_array = None
                 self._s_array = None
                 self._g_original_array = None
@@ -1950,23 +2158,21 @@ class PlotterWidget(QWidget):
 
             self._sync_frequency_inputs_from_metadata()
 
-            if hasattr(self, 'filter_tab'):
-                self.filter_tab._on_image_layer_changed()
-
+            # Calibration is lightweight (just updates button text) — run immediately
             if hasattr(self, 'calibration_tab'):
                 self.calibration_tab._on_image_layer_changed()
 
-            if hasattr(self, 'selection_tab'):
-                self.selection_tab._on_image_layer_changed()
+            # Mark all other analysis tabs as stale (lazy loading).
+            # They will be refreshed when the user switches to them.
+            self._mark_all_tabs_stale()
 
-            if hasattr(self, 'lifetime_tab'):
-                self.lifetime_tab._on_image_layer_changed()
-
-            if hasattr(self, 'components_tab'):
-                self.components_tab._on_image_layer_changed()
-
-            if hasattr(self, 'fret_tab'):
-                self.fret_tab._on_image_layer_changed()
+            # Refresh the currently visible tab immediately so the user
+            # doesn't see a stale indicator on the tab they are looking at.
+            current_tab = self.tab_widget.widget(
+                self.tab_widget.currentIndex()
+            )
+            if current_tab in self._stale_tabs:
+                self._refresh_stale_tab(current_tab)
 
             self.plot()
 
@@ -1988,7 +2194,11 @@ class PlotterWidget(QWidget):
         selected_names = {layer.name for layer in selected_layers}
 
         if len(selected_layers) > 1:
-            self.viewer.grid.enabled = True
+            # Batch visibility changes: only toggle layers whose
+            # visibility actually needs to change to avoid redundant
+            # napari repaint events.
+            if not self.viewer.grid.enabled:
+                self.viewer.grid.enabled = True
 
             for layer in self.viewer.layers:
                 if (
@@ -1998,11 +2208,14 @@ class PlotterWidget(QWidget):
                     and "G_original" in layer.metadata
                     and "S_original" in layer.metadata
                 ):
-                    layer.visible = layer.name in selected_names
+                    should_be_visible = layer.name in selected_names
+                    if layer.visible != should_be_visible:
+                        layer.visible = should_be_visible
         else:
-            self.viewer.grid.enabled = False
+            if self.viewer.grid.enabled:
+                self.viewer.grid.enabled = False
 
-            if selected_layers:
+            if selected_layers and not selected_layers[0].visible:
                 selected_layers[0].visible = True
 
     def _get_common_harmonics(self, layers):
