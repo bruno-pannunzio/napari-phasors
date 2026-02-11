@@ -268,7 +268,7 @@ def test_lifetime_widget_type_changed_to_none(make_napari_viewer):
 
 
 def test_lifetime_widget_type_changed_no_frequency(make_napari_viewer):
-    """Test behavior when lifetime type is changed but no frequency is set."""
+    """Test behavior when Calculate is clicked but no frequency is set."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
@@ -276,8 +276,11 @@ def test_lifetime_widget_type_changed_no_frequency(make_napari_viewer):
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.lifetime_tab
 
+    # Set a lifetime type but don't set frequency
+    lifetime_widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+
     with patch('napari_phasors.lifetime_tab.show_warning') as mock_warning:
-        lifetime_widget._on_lifetime_type_changed("Apparent Phase Lifetime")
+        lifetime_widget._on_calculate_lifetime_clicked()
         mock_warning.assert_called_once_with("Enter frequency")
 
 
@@ -303,10 +306,13 @@ def test_lifetime_widget_settings_initialization_in_metadata(
     lifetime_widget.frequency_input.setText("80.0")
     lifetime_widget._on_frequency_changed()
 
-    # Select a lifetime type - this should trigger analysis and initialize metadata
+    # Select a lifetime type
     lifetime_widget.lifetime_type_combobox.setCurrentText(
         "Apparent Phase Lifetime"
     )
+
+    # Click Calculate to trigger analysis and initialize metadata
+    lifetime_widget._on_calculate_lifetime_clicked()
 
     # Now check that settings were initialized
     assert 'settings' in layer.metadata
@@ -314,7 +320,7 @@ def test_lifetime_widget_settings_initialization_in_metadata(
     assert 'frequency' in layer.metadata['settings']
 
     # Check values
-    assert layer.metadata['settings']['frequency'] == '80.0'
+    assert layer.metadata['settings']['frequency'] == 80.0
     assert (
         layer.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -397,8 +403,11 @@ def test_lifetime_widget_settings_persistence_across_layer_switches(
         "Apparent Phase Lifetime"
     )
 
+    # Click Calculate to trigger the analysis and save to metadata
+    lifetime_widget._on_calculate_lifetime_clicked()
+
     # Verify settings are saved in layer_1 metadata
-    assert layer_1.metadata['settings']['frequency'] == '80.0'
+    assert layer_1.metadata['settings']['frequency'] == 80.0
     assert (
         layer_1.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -458,15 +467,18 @@ def test_lifetime_widget_adding_layer_without_settings_initializes_defaults(
     lifetime_widget.frequency_input.setText("80.0")
     lifetime_widget._on_frequency_changed()
 
-    # Select a lifetime type - this should trigger analysis and initialize metadata
+    # Select a lifetime type
     lifetime_widget.lifetime_type_combobox.setCurrentText(
         "Apparent Phase Lifetime"
     )
 
+    # Click Calculate to trigger analysis and initialize metadata
+    lifetime_widget._on_calculate_lifetime_clicked()
+
     # Now verify settings were initialized with actual values
     assert 'settings' in layer.metadata
     assert 'lifetime' in layer.metadata['settings']
-    assert layer.metadata['settings']['frequency'] == '80.0'
+    assert layer.metadata['settings']['frequency'] == 80.0
     assert (
         layer.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -496,6 +508,9 @@ def test_lifetime_widget_settings_restored_after_recalculation(
         "Apparent Phase Lifetime"
     )
 
+    # Click Calculate to trigger the calculation
+    lifetime_widget._on_calculate_lifetime_clicked()
+
     # Wait for calculation to complete
     assert lifetime_widget.lifetime_data is not None
 
@@ -524,13 +539,17 @@ def test_lifetime_widget_settings_restored_after_recalculation(
         < 0.01
     )
 
-    # Change to different lifetime type and back (triggers recalculation)
+    # Change to different lifetime type and recalculate
     lifetime_widget.lifetime_type_combobox.setCurrentText(
         "Apparent Modulation Lifetime"
     )
+    lifetime_widget._on_calculate_lifetime_clicked()
+
+    # Change back and recalculate
     lifetime_widget.lifetime_type_combobox.setCurrentText(
         "Apparent Phase Lifetime"
     )
+    lifetime_widget._on_calculate_lifetime_clicked()
 
     # Range should be restored from metadata
     assert (
@@ -567,8 +586,11 @@ def test_lifetime_widget_adding_removing_layers_updates_settings(
         "Apparent Phase Lifetime"
     )
 
+    # Click Calculate to trigger analysis
+    lifetime_widget._on_calculate_lifetime_clicked()
+
     # Check settings were saved
-    assert layer_1.metadata['settings']['frequency'] == '80.0'
+    assert layer_1.metadata['settings']['frequency'] == 80.0
     assert (
         layer_1.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -601,7 +623,7 @@ def test_lifetime_widget_adding_removing_layers_updates_settings(
 def test_lifetime_widget_frequency_saved_on_lifetime_type_change(
     make_napari_viewer,
 ):
-    """Test that frequency is saved to metadata when lifetime type is changed."""
+    """Test that frequency is saved to metadata when Calculate is clicked."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.lifetime_tab
@@ -613,13 +635,16 @@ def test_lifetime_widget_frequency_saved_on_lifetime_type_change(
     lifetime_widget.frequency_input.setText("80.0")
     lifetime_widget._on_frequency_changed()
 
-    # Change lifetime type (this should trigger frequency save to general settings too)
+    # Change lifetime type
     lifetime_widget.lifetime_type_combobox.setCurrentText(
         "Apparent Phase Lifetime"
     )
 
-    # Check frequency is in both lifetime settings and general settings
-    assert layer.metadata['settings']['frequency'] == '80.0'
+    # Click Calculate to trigger analysis and save frequency to metadata
+    lifetime_widget._on_calculate_lifetime_clicked()
+
+    # Check frequency is in general settings
+    assert layer.metadata['settings']['frequency'] == 80.0
 
     parent.deleteLater()
 

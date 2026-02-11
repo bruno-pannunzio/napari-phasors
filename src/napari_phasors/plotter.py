@@ -14,8 +14,15 @@ from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import Qt, QTimer, Signal
-from qtpy.QtGui import QStandardItem, QStandardItemModel
+from qtpy.QtCore import QRect, QSize, Qt, QTimer, Signal
+from qtpy.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QPen,
+    QStandardItem,
+    QStandardItemModel,
+)
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +34,9 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QStyle,
+    QStyleOptionButton,
+    QStyleOptionViewItem,
     QStyledItemDelegate,
     QTabWidget,
     QVBoxLayout,
@@ -42,14 +52,166 @@ from .lifetime_tab import LifetimeWidget
 from .selection_tab import SelectionWidget
 
 
+class _PrimaryLayerDelegate(QStyledItemDelegate):
+    """Custom delegate that renders items with a "Set as primary" action or
+    a "Primary layer" indicator on the right side of each row."""
+
+    # Role used to store whether an item is the primary layer
+    PRIMARY_ROLE = Qt.UserRole + 100
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._action_font = QFont()
+        self._action_font.setUnderline(True)
+        self._label_font = QFont()
+        self._label_font.setItalic(True)
+        self._hovered_index = None  # Track which item is hovered
+
+    # ---- sizing -------------------------------------------------------------
+
+    def sizeHint(self, option, index):
+        base = super().sizeHint(option, index)
+        return QSize(base.width(), max(base.height(), 24))
+
+    # ---- painting -----------------------------------------------------------
+
+    def paint(self, painter, option, index):
+        painter.save()
+
+        # Draw background for selection / hover
+        self.initStyleOption(option, index)
+        style = option.widget.style() if option.widget else QComboBox().style()
+        style.drawPrimitive(
+            QStyle.PE_PanelItemViewItem, option, painter, option.widget
+        )
+
+        rect = option.rect
+        is_primary = index.data(self.PRIMARY_ROLE)
+
+        # --- Checkbox on the left ---
+        check_state = index.data(Qt.CheckStateRole)
+        cb_option = QStyleOptionButton()
+        cb_size = 16
+        cb_margin = 4
+        cb_option.rect = QRect(
+            rect.left() + cb_margin,
+            rect.top() + (rect.height() - cb_size) // 2,
+            cb_size,
+            cb_size,
+        )
+        if check_state == Qt.Checked:
+            cb_option.state = QStyle.State_On | QStyle.State_Enabled
+        else:
+            cb_option.state = QStyle.State_Off | QStyle.State_Enabled
+        style.drawControl(QStyle.CE_CheckBox, cb_option, painter)
+
+        text_left = rect.left() + cb_margin + cb_size + cb_margin
+
+        # --- Right-side label (only for primary, or for hovered non-primary) ---
+        right_margin = 8
+        label_text = None
+        label_color = None
+        
+        is_hovered = (index.row() == getattr(self._hovered_index, 'row', lambda: -1)() 
+                      if self._hovered_index else False)
+        
+        if is_primary:
+            # Always show "Primary layer" for the primary layer
+            label_text = "Primary layer"
+            painter.setFont(self._label_font)
+            label_color = QColor(255, 100, 100)
+        elif is_hovered:
+            # Only show "Set as primary" when hovering over non-primary checked items
+            if check_state == Qt.Checked:
+                label_text = "Set as primary"
+                painter.setFont(self._action_font)
+                label_color = QColor(180, 180, 220)
+
+        # Draw the label if we have one
+        label_rect = QRect()
+        if label_text:
+            fm_label = QFontMetrics(painter.font())
+            label_width = fm_label.horizontalAdvance(label_text) + 4
+            label_rect = QRect(
+                rect.right() - label_width - right_margin,
+                rect.top(),
+                label_width,
+                rect.height(),
+            )
+            painter.setPen(QPen(label_color))
+            painter.drawText(label_rect, Qt.AlignVCenter | Qt.AlignRight, label_text)
+        else:
+            # No label, use full width for layer name
+            label_rect = QRect(rect.right(), rect.top(), 0, rect.height())
+
+        # --- Elided layer name ---
+        name = index.data(Qt.DisplayRole) or ""
+        text_right = label_rect.left() - 6
+        available = text_right - text_left
+        painter.setFont(option.font)
+        fm_name = QFontMetrics(option.font)
+        elided = fm_name.elidedText(name, Qt.ElideRight, max(available, 30))
+
+        # Use default text color
+        if option.state & QStyle.State_Selected:
+            painter.setPen(QPen(option.palette.highlightedText().color()))
+        else:
+            painter.setPen(QPen(option.palette.text().color()))
+
+        name_rect = QRect(text_left, rect.top(), available, rect.height())
+        painter.drawText(name_rect, Qt.AlignVCenter | Qt.AlignLeft, elided)
+
+        painter.restore()
+
+    # ---- hit-testing --------------------------------------------------------
+
+    def labelRect(self, option, index):
+        """Return the QRect of the right-side label for hit testing."""
+        rect = option.rect
+        is_primary = index.data(self.PRIMARY_ROLE)
+
+        # Check if we have a label to show
+        label_text = None
+        font = None
+        
+        if is_primary:
+            label_text = "Primary layer"
+            font = self._label_font
+        else:
+            # Only show "Set as primary" when hovered
+            check_state = index.data(Qt.CheckStateRole)
+            is_hovered = (index.row() == getattr(self._hovered_index, 'row', lambda: -1)() 
+                          if self._hovered_index else False)
+            if is_hovered and check_state == Qt.Checked:
+                label_text = "Set as primary"
+                font = self._action_font
+
+        if not label_text:
+            # No label, return empty rect
+            return QRect()
+
+        fm = QFontMetrics(font)
+        label_width = fm.horizontalAdvance(label_text) + 4
+        right_margin = 8
+        return QRect(
+            rect.right() - label_width - right_margin,
+            rect.top(),
+            label_width,
+            rect.height(),
+        )
+
+
 class CheckableComboBox(QComboBox):
     """A ComboBox with checkable items for multi-selection.
 
-    Displays selected items as comma-separated text and emits
-    selectionChanged signal when items are checked/unchecked.
+    Displays selected items and emits selectionChanged signal when items
+    are checked/unchecked.  The *primary* layer (used for metadata and
+    settings) can be set by clicking "Set as primary" next to any
+    checked item in the dropdown.
     """
 
     selectionChanged = Signal()
+    primaryLayerChanged = Signal(str)  # Emits the new primary layer name
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,8 +220,12 @@ class CheckableComboBox(QComboBox):
         self.lineEdit().setReadOnly(True)
         self.lineEdit().setPlaceholderText("Select layers...")
 
-        # Use a delegate to prevent closing on click
-        self.setItemDelegate(QStyledItemDelegate(self))
+        # Custom delegate with "Set as primary" support
+        self._delegate = _PrimaryLayerDelegate(self)
+        self.setItemDelegate(self._delegate)
+
+        # Track primary layer name
+        self._primary_layer_name = ""
 
         # Connect model signals
         self.model().dataChanged.connect(self._on_data_changed)
@@ -67,13 +233,19 @@ class CheckableComboBox(QComboBox):
         # Track if we're inside the popup
         self._popup_visible = False
 
+        # Track the last known primary for change detection
+        self._last_emitted_primary = ""
+
         # Make the line edit clickable to open popup
         self.lineEdit().installEventFilter(self)
         # Prevent cursor positioning in line edit
         self.lineEdit().setFocusPolicy(Qt.NoFocus)
 
-        # Install event filter on view to handle item clicks
+        # Install event filter on view to handle item clicks and hover
         self.view().viewport().installEventFilter(self)
+        self.view().setMouseTracking(True)  # Enable mouse tracking for hover
+
+    # ---- Bulk helpers -------------------------------------------------------
 
     def selectAll(self):
         """Check all items (emits one selectionChanged)."""
@@ -81,8 +253,7 @@ class CheckableComboBox(QComboBox):
         for i in range(self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Checked)
         self.blockSignals(False)
-        self._update_display_text()
-        self.selectionChanged.emit()
+        self._refresh_primary_and_notify()
 
     def deselectAll(self):
         """Uncheck all items (emits one selectionChanged)."""
@@ -90,37 +261,69 @@ class CheckableComboBox(QComboBox):
         for i in range(self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Unchecked)
         self.blockSignals(False)
-        self._update_display_text()
-        self.selectionChanged.emit()
+        self._refresh_primary_and_notify()
+
+    # ---- Event filter -------------------------------------------------------
 
     def eventFilter(self, obj, event):
         """Filter events to make line edit clickable and handle item clicks."""
         if obj == self.lineEdit():
             if event.type() == event.MouseButtonRelease:
-                # Toggle popup on mouse release
                 if not self.view().isVisible():
                     self.showPopup()
                 return True
             elif event.type() == event.MouseButtonPress:
-                # Consume press event to prevent default behavior
                 return True
         elif obj == self.view().viewport():
-            if event.type() == event.MouseButtonRelease:
-                # Get the index of the clicked item
+            if event.type() == event.MouseMove:
+                # Update hovered index for "Set as primary" visibility
+                index = self.view().indexAt(event.pos())
+                old_hover = self._delegate._hovered_index
+                self._delegate._hovered_index = index if index.isValid() else None
+                # Trigger repaint if hover changed
+                if old_hover != self._delegate._hovered_index:
+                    self.view().viewport().update()
+                return False  # Allow default processing
+            elif event.type() == event.MouseButtonRelease:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
-                    # Toggle the check state
-                    item = self.model().itemFromIndex(index)
-                    if item:
-                        current_state = item.checkState()
-                        new_state = (
-                            Qt.Unchecked
-                            if current_state == Qt.Checked
-                            else Qt.Checked
-                        )
-                        item.setCheckState(new_state)
-                    return True
+                    # Check if user clicked the right-side label area
+                    vis_rect = self.view().visualRect(index)
+                    option = QStyleOptionViewItem()
+                    option.rect = vis_rect
+                    label_rect = self._delegate.labelRect(option, index)
+
+                    if label_rect.contains(event.pos()) and not label_rect.isEmpty():
+                        # Clicked "Set as primary" (only for non-primary items)
+                        is_primary = index.data(_PrimaryLayerDelegate.PRIMARY_ROLE)
+                        if not is_primary:
+                            item = self.model().itemFromIndex(index)
+                            if item:
+                                # Ensure it's checked first
+                                if item.checkState() != Qt.Checked:
+                                    item.setCheckState(Qt.Checked)
+                                self._set_primary_by_name(item.text())
+                        return True
+                    else:
+                        # Regular click – toggle check state
+                        item = self.model().itemFromIndex(index)
+                        if item:
+                            current_state = item.checkState()
+                            new_state = (
+                                Qt.Unchecked
+                                if current_state == Qt.Checked
+                                else Qt.Checked
+                            )
+                            item.setCheckState(new_state)
+                        return True
+            elif event.type() == event.Leave:
+                # Clear hover when mouse leaves viewport
+                if self._delegate._hovered_index is not None:
+                    self._delegate._hovered_index = None
+                    self.view().viewport().update()
         return super().eventFilter(obj, event)
+
+    # ---- Item management ----------------------------------------------------
 
     def addItem(self, text, checked=False):
         """Add a checkable item to the combobox."""
@@ -129,7 +332,11 @@ class CheckableComboBox(QComboBox):
         item.setData(
             Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole
         )
+        item.setData(False, _PrimaryLayerDelegate.PRIMARY_ROLE)
         self.model().appendRow(item)
+        # If this is the first checked item and no primary is set, make it primary
+        if checked and not self._primary_layer_name:
+            self._set_primary_by_name(text, emit=False)
 
     def addItems(self, texts):
         """Add multiple items to the combobox."""
@@ -139,16 +346,44 @@ class CheckableComboBox(QComboBox):
     def clear(self):
         """Clear all items."""
         self.model().clear()
+        self._primary_layer_name = ""
+        self._last_emitted_primary = ""
         self._update_display_text()
 
     def checkedItems(self):
-        """Return list of checked item texts."""
+        """Return list of checked item texts in list order (top to bottom)."""
         checked = []
         for i in range(self.model().rowCount()):
             item = self.model().item(i)
-            if item.checkState() == Qt.Checked:
+            if item and item.checkState() == Qt.Checked:
                 checked.append(item.text())
         return checked
+
+    def allItems(self):
+        """Return list of all item texts in list order."""
+        return [
+            self.model().item(i).text()
+            for i in range(self.model().rowCount())
+            if self.model().item(i)
+        ]
+
+    def getPrimaryLayer(self):
+        """Return the name of the primary layer."""
+        checked = self.checkedItems()
+        # If current primary is not in checked items, pick the first checked
+        if self._primary_layer_name not in checked:
+            self._primary_layer_name = checked[0] if checked else ""
+            self._sync_primary_role()
+        return self._primary_layer_name
+
+    def setPrimaryLayer(self, name):
+        """Set the primary layer by name.
+
+        The layer must already be checked.
+        """
+        checked = self.checkedItems()
+        if name in checked:
+            self._set_primary_by_name(name)
 
     def setCheckedItems(self, texts):
         """Set which items are checked by their text."""
@@ -160,16 +395,71 @@ class CheckableComboBox(QComboBox):
             else:
                 item.setCheckState(Qt.Unchecked)
         self.blockSignals(False)
+        # Update primary if needed
+        if texts and self._primary_layer_name not in texts:
+            self._primary_layer_name = texts[0]
+        elif not texts:
+            self._primary_layer_name = ""
+        self._sync_primary_role()
+        self._refresh_primary_and_notify()
+
+    # ---- Internal primary management ----------------------------------------
+
+    def _set_primary_by_name(self, name, emit=True):
+        """Set the primary layer and update role data on all items."""
+        old = self._primary_layer_name
+        self._primary_layer_name = name
+        self._sync_primary_role()
         self._update_display_text()
+        if emit and old != name:
+            self._last_emitted_primary = name
+            self.primaryLayerChanged.emit(name)
+            self.selectionChanged.emit()
+
+    def _sync_primary_role(self):
+        """Update the PRIMARY_ROLE on every item to match _primary_layer_name."""
+        model = self.model()
+        for i in range(model.rowCount()):
+            item = model.item(i)
+            if item:
+                item.setData(
+                    item.text() == self._primary_layer_name,
+                    _PrimaryLayerDelegate.PRIMARY_ROLE,
+                )
+
+    # ---- Callbacks ----------------------------------------------------------
 
     def _on_data_changed(self, topLeft, bottomRight, roles):
         """Handle item check state changes."""
         if Qt.CheckStateRole in roles:
-            self._update_display_text()
-            self.selectionChanged.emit()
+            self._refresh_primary_and_notify()
+
+    def _refresh_primary_and_notify(self):
+        """Recalculate primary, emit appropriate signals."""
+        checked = self.checkedItems()
+        old_primary = self._last_emitted_primary
+
+        # If primary was unchecked, pick a new one
+        if self._primary_layer_name not in checked:
+            self._primary_layer_name = checked[0] if checked else ""
+        # If no primary was set but we have checked items
+        elif not self._primary_layer_name and checked:
+            self._primary_layer_name = checked[0]
+
+        self._sync_primary_role()
+        self._update_display_text()
+
+        new_primary = self._primary_layer_name
+        if old_primary != new_primary:
+            self._last_emitted_primary = new_primary
+            self.primaryLayerChanged.emit(new_primary)
+
+        self.selectionChanged.emit()
+
+    # ---- Display ------------------------------------------------------------
 
     def _update_display_text(self):
-        """Update the display text to show checked items."""
+        """Update the display text to show primary layer and selection count."""
         checked = self.checkedItems()
         if not checked:
             self.lineEdit().setText("")
@@ -177,7 +467,14 @@ class CheckableComboBox(QComboBox):
         elif len(checked) == 1:
             self.lineEdit().setText(checked[0])
         else:
-            self.lineEdit().setText(f"{len(checked)} layers selected")
+            primary = self._primary_layer_name or checked[0]
+            others = len(checked) - 1
+            suffix = "selected layer" if others == 1 else "selected layers"
+            self.lineEdit().setText(
+                f"\u2605 {primary}  + {others} {suffix}"
+            )
+
+    # ---- Popup control ------------------------------------------------------
 
     def showPopup(self):
         """Show the popup and track visibility."""
@@ -185,8 +482,9 @@ class CheckableComboBox(QComboBox):
         super().showPopup()
 
     def hidePopup(self):
-        """Hide the popup."""
+        """Hide the popup and clear hover state."""
         self._popup_visible = False
+        self._delegate._hovered_index = None
         super().hidePopup()
 
     def itemCheckState(self, index):
@@ -340,7 +638,9 @@ class PlotterWidget(QWidget):
         self.image_layers_checkable_combobox = CheckableComboBox()
         self.image_layers_checkable_combobox.setMaximumHeight(25)
         self.image_layers_checkable_combobox.setToolTip(
-            "Select one or more layers to plot. Check multiple layers to merge their phasor data in the plot."
+            "Select one or more layers to plot. Check multiple layers to merge their phasor data.\n"
+            "Click 'Set as primary' next to a layer name to change the primary layer.\n"
+            "The primary layer is used for settings and analysis."
         )
         image_layer_layout.addWidget(self.image_layers_checkable_combobox, 1)
 
@@ -471,11 +771,16 @@ class PlotterWidget(QWidget):
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
 
         # Connect callbacks
-        self.image_layers_checkable_combobox.selectionChanged.connect(
-            self.on_image_layer_changed
+        # When primary layer changes, update all tab UIs (but don't run analyses)
+        self.image_layers_checkable_combobox.primaryLayerChanged.connect(
+            self._on_primary_layer_changed
         )
-        # Update all frequency widgets from layer metadata if layer changes
+        # When selection changes, only update the plot
         self.image_layers_checkable_combobox.selectionChanged.connect(
+            self._on_selection_changed
+        )
+        # Update all frequency widgets from layer metadata if primary layer changes
+        self.image_layers_checkable_combobox.primaryLayerChanged.connect(
             self._sync_frequency_inputs_from_metadata
         )
         # Update mask when mask layer selection changes
@@ -575,19 +880,17 @@ class PlotterWidget(QWidget):
         return self.image_layers_checkable_combobox.checkedItems()
 
     def get_primary_layer_name(self):
-        """Get the name of the primary (first) selected layer.
+        """Get the name of the primary selected layer.
 
         The primary layer is used for metadata operations and analysis.
-        For backward compatibility, this returns the first selected layer
-        or an empty string if no layer is selected.
+        This is determined by the CheckableComboBox's primary layer tracking.
 
         Returns
         -------
         str
             Name of the primary selected layer, or empty string if none.
         """
-        selected = self.get_selected_layer_names()
-        return selected[0] if selected else ""
+        return self.image_layers_checkable_combobox.getPrimaryLayer()
 
     def get_selected_layers(self):
         """Get all selected layer objects.
@@ -616,6 +919,7 @@ class PlotterWidget(QWidget):
         if primary_name and primary_name in self.viewer.layers:
             return self.viewer.layers[primary_name]
         return None
+
 
     # Backward compatibility property
     @property
@@ -1932,6 +2236,9 @@ class PlotterWidget(QWidget):
         When multiple layers are selected, the primary (first) layer is used
         for metadata operations and analysis, while all selected layers
         contribute to the merged plot.
+
+        This is the full handler used for initial load and layer list updates.
+        For incremental changes, use _on_primary_layer_changed or _on_selection_changed.
         """
         if getattr(self, "_in_on_image_layer_changed", False):
             return
@@ -2019,6 +2326,129 @@ class PlotterWidget(QWidget):
 
         finally:
             self._in_on_image_layer_changed = False
+
+    def _on_primary_layer_changed(self, new_primary_name):
+        """Handle changes to the primary layer only.
+
+        Updates tab UIs to reflect the new primary layer's settings,
+        but does NOT automatically run analyses, only restores UI state.
+
+        Parameters
+        ----------
+        new_primary_name : str
+            The name of the new primary layer.
+        """
+        if getattr(self, "_in_on_primary_layer_changed", False):
+            return
+        self._in_on_primary_layer_changed = True
+        try:
+            selected_layers = self.get_selected_layers()
+            self._update_grid_view(selected_layers)
+
+            if not new_primary_name:
+                self._g_array = None
+                self._s_array = None
+                self._g_original_array = None
+                self._s_original_array = None
+                self._harmonics_array = None
+                for artist in self.canvas_widget.artists.values():
+                    artist._remove_artists()
+                self._remove_colorbar()
+                self._hide_all_tab_artists()
+                self.set_axes_labels()
+                self._update_plot_bg_color()
+                if self.toggle_semi_circle:
+                    self._update_semi_circle_plot(self.canvas_widget.axes)
+                else:
+                    self._update_polar_plot(self.canvas_widget.axes)
+                self._redefine_axes_limits()
+                self.canvas_widget.figure.canvas.draw_idle()
+                return
+
+            layer = self.viewer.layers[new_primary_name]
+            layer_metadata = layer.metadata
+
+            self._g_array = layer_metadata.get("G")
+            self._s_array = layer_metadata.get("S")
+            self._g_original_array = layer_metadata.get("G_original")
+            self._s_original_array = layer_metadata.get("S_original")
+            self._harmonics_array = layer_metadata.get("harmonics")
+
+            # Update harmonic range
+            if len(selected_layers) > 1:
+                common_harmonics = self._get_common_harmonics(selected_layers)
+                if common_harmonics is not None and len(common_harmonics) > 0:
+                    min_harmonic = int(np.min(common_harmonics))
+                    max_harmonic = int(np.max(common_harmonics))
+                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+            elif self._harmonics_array is not None:
+                self._harmonics_array = np.atleast_1d(self._harmonics_array)
+                min_harmonic = int(np.min(self._harmonics_array))
+                max_harmonic = int(np.max(self._harmonics_array))
+                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+
+            self.mask_layer_combobox.blockSignals(True)
+            self.mask_layer_combobox.setCurrentText("None")
+            self.mask_layer_combobox.blockSignals(False)
+
+            self._initialize_plot_settings_in_metadata(layer)
+            self._restore_plot_settings_from_metadata()
+
+            # Update tab UIs (restore settings from metadata, don't run analyses)
+            if hasattr(self, 'filter_tab'):
+                self.filter_tab._on_image_layer_changed()
+
+            if hasattr(self, 'calibration_tab'):
+                self.calibration_tab._on_image_layer_changed()
+
+            if hasattr(self, 'selection_tab'):
+                self.selection_tab._on_image_layer_changed()
+
+            if hasattr(self, 'lifetime_tab'):
+                self.lifetime_tab._on_image_layer_changed()
+
+            if hasattr(self, 'components_tab'):
+                self.components_tab._on_image_layer_changed()
+
+            if hasattr(self, 'fret_tab'):
+                self.fret_tab._on_image_layer_changed()
+
+            # Update the plot
+            self.plot()
+
+        finally:
+            self._in_on_primary_layer_changed = False
+
+    def _on_selection_changed(self):
+        """Handle changes to layer selection (adding/removing layers).
+
+        Only updates the phasor plot. Tab UIs are not updated unless
+        the primary layer changed (which triggers _on_primary_layer_changed).
+        """
+        if getattr(self, "_in_on_selection_changed", False):
+            return
+        self._in_on_selection_changed = True
+        try:
+            selected_layers = self.get_selected_layers()
+            self._update_grid_view(selected_layers)
+
+            layer_name = self.get_primary_layer_name()
+            if not layer_name:
+                return
+
+            # Update harmonic range based on current selection
+            if len(selected_layers) > 1:
+                common_harmonics = self._get_common_harmonics(selected_layers)
+                if common_harmonics is not None and len(common_harmonics) > 0:
+                    min_harmonic = int(np.min(common_harmonics))
+                    max_harmonic = int(np.max(common_harmonics))
+                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+
+            # Only update the plot - tabs remain unchanged
+            self.plot()
+
+        finally:
+            self._in_on_selection_changed = False
 
     def _update_grid_view(self, selected_layers):
         """Update napari grid view based on selected layers.
