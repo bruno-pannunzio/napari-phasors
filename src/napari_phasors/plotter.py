@@ -1170,7 +1170,12 @@ class PlotterWidget(QWidget):
         return []
 
     def _restore_all_tab_analyses(self, selected_tabs=None):
-        """Restore only selected tab analyses."""
+        """Restore UI values for selected tabs from metadata.
+
+        This only restores UI state (input fields, sliders, visual elements
+        on the plot) but does NOT run any analyses. The user must click
+        the respective run/apply/calculate buttons to execute analyses.
+        """
         if selected_tabs is None:
             selected_tabs = [
                 "settings_tab",
@@ -1190,10 +1195,8 @@ class PlotterWidget(QWidget):
             self, 'calibration_tab'
         ):
             self.calibration_tab._on_image_layer_changed()
-            self._apply_calibration_if_needed()
         if "filter_tab" in selected_tabs and hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
-            self.filter_tab.apply_button_clicked()
         if "components_tab" in selected_tabs and hasattr(
             self, 'components_tab'
         ):
@@ -2324,6 +2327,10 @@ class PlotterWidget(QWidget):
 
             self.plot()
 
+            # Enforce tab-specific artist visibility based on current tab
+            current_tab_index = self.tab_widget.currentIndex()
+            self._on_tab_changed(current_tab_index)
+
         finally:
             self._in_on_image_layer_changed = False
 
@@ -2415,6 +2422,10 @@ class PlotterWidget(QWidget):
 
             # Update the plot
             self.plot()
+
+            # Enforce tab-specific artist visibility based on current tab
+            current_tab_index = self.tab_widget.currentIndex()
+            self._on_tab_changed(current_tab_index)
 
         finally:
             self._in_on_primary_layer_changed = False

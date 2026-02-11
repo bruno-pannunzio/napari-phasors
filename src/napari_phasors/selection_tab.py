@@ -1789,7 +1789,9 @@ class CircularCursorWidget(QWidget):
             finally:
                 if original_apply_selection is not None:
                     self._apply_selection = original_apply_selection
-                    self._apply_selection()
+                    # Do NOT call _apply_selection() here. Only restore
+                    # the visual cursor circles on the plot. The user
+                    # must trigger selection application explicitly.
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()

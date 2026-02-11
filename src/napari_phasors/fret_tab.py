@@ -1494,7 +1494,14 @@ class FretWidget(QWidget):
             self._updating_settings = True
             try:
                 self._restore_fret_settings_from_metadata()
-                self._recreate_fret_from_metadata()
+                # Only plot the donor trajectory (visual element) but do NOT
+                # run calculate_fret_efficiency. The user must click the
+                # calculate button to run the analysis.
+                if (
+                    self.donor_line_edit.text()
+                    and self.frequency_input.text()
+                ):
+                    self.plot_donor_trajectory()
             finally:
                 self._updating_settings = False
 
