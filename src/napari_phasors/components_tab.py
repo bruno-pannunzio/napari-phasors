@@ -1192,6 +1192,7 @@ class ComponentsWidget(QWidget):
 
         self.draw_line_between_components()
 
+
     def _on_harmonic_changed(self, new_harmonic):
         """Handle harmonic changes - store current components and restore for new harmonic."""
         self._clear_components_display()
