@@ -75,6 +75,24 @@ class CheckableComboBox(QComboBox):
         # Install event filter on view to handle item clicks
         self.view().viewport().installEventFilter(self)
 
+    def selectAll(self):
+        """Check all items (emits one selectionChanged)."""
+        self.blockSignals(True)
+        for i in range(self.model().rowCount()):
+            self.model().item(i).setCheckState(Qt.Checked)
+        self.blockSignals(False)
+        self._update_display_text()
+        self.selectionChanged.emit()
+
+    def deselectAll(self):
+        """Uncheck all items (emits one selectionChanged)."""
+        self.blockSignals(True)
+        for i in range(self.model().rowCount()):
+            self.model().item(i).setCheckState(Qt.Unchecked)
+        self.blockSignals(False)
+        self._update_display_text()
+        self.selectionChanged.emit()
+
     def eventFilter(self, obj, event):
         """Filter events to make line edit clickable and handle item clicks."""
         if obj == self.lineEdit():
