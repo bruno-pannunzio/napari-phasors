@@ -43,7 +43,6 @@ from qtpy.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionButton,
     QStyleOptionViewItem,
-    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
