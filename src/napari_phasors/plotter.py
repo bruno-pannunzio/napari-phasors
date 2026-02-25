@@ -1479,7 +1479,7 @@ class PlotterWidget(QWidget):
 
         self._show_tab_artists(current_tab)
 
-        # Show/hide histogram dock widgets based on active tab
+        # Show/hide detachable histogram dock widgets
         self._update_histogram_dock_visibility(current_tab)
 
         # Update filter histogram if switching to filter tab and it needs updating
