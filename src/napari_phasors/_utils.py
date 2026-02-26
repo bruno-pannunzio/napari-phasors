@@ -1382,7 +1382,8 @@ class HistogramWidget(QWidget):
                 self.fig.patch.set_facecolor('white')
                 self.fig.patch.set_alpha(1)
             else:
-                self.ax.patch.set_alpha(0)
+                self.ax.patch.set_facecolor("#828A99")
+                self.ax.patch.set_alpha(1)
                 self.fig.patch.set_alpha(0)
             color = 'grey'
         
@@ -1971,28 +1972,22 @@ class HistogramDockWidget(QWidget):
         self._title = title
         self.histogram_widget = histogram_widget
 
-        # Ensure the dock widget is at least tall enough for histogram + buttons
         self.setMinimumHeight(300)
 
-        # Main layout for this widget
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Create scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        # Content widget inside scroll area
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Embed the histogram widget
         layout.addWidget(histogram_widget)
 
-        # --- Layer statistics (collapsible) ---
         self.layer_stats_section = CollapsibleSection(
             "Layer Statistics", initially_collapsed=True
         )
@@ -2000,7 +1995,6 @@ class HistogramDockWidget(QWidget):
         self.layer_stats_section.add_widget(self.layer_stats_table)
         layout.addWidget(self.layer_stats_section)
 
-        # --- Group statistics (collapsible, only visible when grouped) ---
         self.group_stats_section = CollapsibleSection(
             "Group Statistics", initially_collapsed=True
         )
@@ -2011,16 +2005,10 @@ class HistogramDockWidget(QWidget):
 
         layout.addStretch()
 
-        # Set content widget to scroll area
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area)
 
-        # React to histogram data / settings changes
         histogram_widget.dataChanged.connect(self._update_statistics)
-
-    # ------------------------------------------------------------------
-    # Statistics refresh
-    # ------------------------------------------------------------------
 
     def _update_statistics(self):
         """Recompute the statistics tables from the histogram's data."""
@@ -2037,7 +2025,6 @@ class HistogramDockWidget(QWidget):
             )
             self.layer_stats_section.setVisible(True)
 
-            # Show group stats only when in Grouped mode
             if hw._display_mode == "Grouped" and hw._group_assignments:
                 self.group_stats_table.update_group_statistics(
                     hw._datasets,
@@ -2059,9 +2046,6 @@ class HistogramDockWidget(QWidget):
             self.layer_stats_section.setVisible(False)
             self.group_stats_section.setVisible(False)
 
-    # ------------------------------------------------------------------
-    # Export functionality
-    # ------------------------------------------------------------------
 
     def _export_table_csv_impl(self):
         """Export the visible statistics table(s) to CSV file(s)."""
@@ -2075,15 +2059,12 @@ class HistogramDockWidget(QWidget):
         if not file_path:
             return
         
-        # Ensure .csv extension
         if not file_path.endswith('.csv'):
             file_path += '.csv'
         
-        # Export layer statistics if visible
         if self.layer_stats_section.isVisible():
             self._write_table_to_csv(self.layer_stats_table, file_path)
         
-        # If group stats are also visible, save to a separate file
         if self.group_stats_section.isVisible():
             group_file = file_path.replace('.csv', '_groups.csv')
             self._write_table_to_csv(self.group_stats_table, group_file)
@@ -2103,13 +2084,11 @@ class HistogramDockWidget(QWidget):
         with open(file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
-            # Write header
             headers = []
             for col in range(table.columnCount()):
                 headers.append(table.horizontalHeaderItem(col).text())
             writer.writerow(headers)
             
-            # Write data rows
             for row in range(table.rowCount()):
                 row_data = []
                 for col in range(table.columnCount()):
