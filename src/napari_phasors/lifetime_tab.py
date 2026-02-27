@@ -117,9 +117,9 @@ class LifetimeWidget(QWidget):
             self._on_frequency_changed
         )
 
-        # Add histogram widget with built-in range slider
+        # Histogram widget with built-in range slider
         # NOTE: The widget is created here but NOT added to this tab's layout.
-        # PlotterWidget wraps it in a HistogramDockWidget for a detachable window.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
             xlabel="Lifetime (ns)",
             ylabel="Pixel count",

@@ -328,7 +328,7 @@ class FretWidget(QWidget):
 
         # FRET efficiency histogram
         # NOTE: The widget is created here but NOT added to this tab's layout.
-        # PlotterWidget wraps it in a HistogramDockWidget for a detachable window.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
             xlabel="FRET efficiency",
             ylabel="Pixel count",

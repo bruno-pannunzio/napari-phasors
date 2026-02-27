@@ -23,6 +23,7 @@ from phasorpy.filter import (
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QDoubleValidator, QStandardItem, QStandardItemModel
 from qtpy.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -32,6 +33,7 @@ from qtpy.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QStyledItemDelegate,
@@ -1092,13 +1094,8 @@ class HistogramWidget(QWidget):
         self.range_slider.setValue((lo_s, hi_s))
         self.rangeChanged.emit(lo, hi)
 
-    # ------------------------------------------------------------------
-    # Export controls
-    # ------------------------------------------------------------------
-
     def _export_table_csv(self):
         """Export statistics table to CSV - delegates to dock widget."""
-        # Find the parent HistogramDockWidget if it exists
         parent = self.parent()
         while parent is not None:
             if hasattr(parent, '_export_table_csv_impl'):
@@ -1118,16 +1115,12 @@ class HistogramWidget(QWidget):
         if not file_path:
             return
         
-        # Ensure .png extension
         if not file_path.endswith('.png'):
             file_path += '.png'
         
-        # Temporarily switch to export styling
         self._style_axes(export_mode=True)
         self.fig.canvas.draw_idle()
         
-        # Save with high DPI
-        # transparent=True if not white background, False otherwise
         use_transparent = not self._white_background
         self.fig.savefig(
             file_path,
@@ -1137,13 +1130,8 @@ class HistogramWidget(QWidget):
             facecolor='white' if self._white_background else 'none',
         )
         
-        # Restore display styling
         self._style_axes(export_mode=False)
         self.fig.canvas.draw_idle()
-
-    # ------------------------------------------------------------------
-    # Settings dialog
-    # ------------------------------------------------------------------
 
     def _open_settings_dialog(self):
         """Open the histogram settings dialog."""
@@ -1160,7 +1148,6 @@ class HistogramWidget(QWidget):
             group_names=self._group_names,
             parent=self,
         )
-        # Set white background and smooth curves checkbox state
         dlg.white_bg_checkbox.setChecked(self._white_background)
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
         
@@ -1183,9 +1170,6 @@ class HistogramWidget(QWidget):
                 self._render()
             self.dataChanged.emit()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def update_data(self, data: np.ndarray) -> None:
         """Compute histogram from *data* and render.
@@ -1215,7 +1199,6 @@ class HistogramWidget(QWidget):
             self.show()
             return
 
-        # Store as single-layer multi-dataset for consistent rendering
         self._datasets = {"Layer": valid}
         self._raw_valid_data = valid
         self._previous_dataset_count = 0
@@ -1223,7 +1206,6 @@ class HistogramWidget(QWidget):
         self.counts, self.bin_edges = np.histogram(valid, bins=self.bins)
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
         
-        # Populate counts per dataset for consistent rendering
         self._counts_per_dataset = {"Layer": self.counts}
 
         self._render()
@@ -1263,7 +1245,6 @@ class HistogramWidget(QWidget):
             self.show()
             return
 
-        # Compute common bins from pooled data
         all_valid = np.concatenate(list(self._datasets.values()))
         self._raw_valid_data = all_valid
         self.counts, self.bin_edges = np.histogram(
@@ -1271,13 +1252,11 @@ class HistogramWidget(QWidget):
         )
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
 
-        # Per-dataset histograms on the same bins
         self._counts_per_dataset = {}
         for label, valid in self._datasets.items():
             counts, _ = np.histogram(valid, bins=self.bin_edges)
             self._counts_per_dataset[label] = counts
 
-        # Enable Show SD by default when transitioning from single to multiple layers
         current_count = len(self._datasets)
         if current_count > 1 and self._previous_dataset_count <= 1:
             self._show_sd = True
@@ -1364,7 +1343,6 @@ class HistogramWidget(QWidget):
             If True, use black colors suitable for export, by default False.
         """
         if export_mode:
-            # For export: use white or transparent bg, black text
             if self._white_background:
                 self.ax.patch.set_facecolor('white')
                 self.ax.patch.set_alpha(1)
@@ -1375,15 +1353,14 @@ class HistogramWidget(QWidget):
                 self.fig.patch.set_alpha(0)
             color = 'black'
         else:
-            # For display: transparent bg, grey text
             if self._white_background:
                 self.ax.patch.set_facecolor('white')
                 self.ax.patch.set_alpha(1)
                 self.fig.patch.set_facecolor('white')
                 self.fig.patch.set_alpha(1)
             else:
-                self.ax.patch.set_facecolor("#828A99")
-                self.ax.patch.set_alpha(1)
+                # self.ax.patch.set_facecolor("#828A99")
+                self.ax.patch.set_alpha(0)
                 self.fig.patch.set_alpha(0)
             color = 'grey'
         
@@ -1453,7 +1430,6 @@ class HistogramWidget(QWidget):
             )
             y_fine = np.interp(x_fine, self.bin_centers, y_smooth)
         else:
-            # No smoothing: return bin centers and raw data
             x_fine = self.bin_centers
             y_fine = y.astype(float)
         return x_fine, y_fine
@@ -1532,7 +1508,6 @@ class HistogramWidget(QWidget):
                         val, color=color, ls="--", lw=2, alpha=0.85
                     )
         else:
-            # Merged or single-dataset
             if self._raw_valid_data is not None:
                 val = self._compute_central_tendency(
                     self._raw_valid_data,
@@ -1560,7 +1535,6 @@ class HistogramWidget(QWidget):
             else:
                 self._render_merged()
         else:
-            # No datasets at all
             self._render_bars()
 
         self._draw_central_tendency_lines()
@@ -1596,9 +1570,8 @@ class HistogramWidget(QWidget):
         y_max = float(np.max(y_upper))
         y_min = float(np.min(y_lower))
         if y_max <= y_min:
-            y_max = y_min + 1  # avoid zero-height extent
+            y_max = y_min + 1
 
-        # Build a 1-row gradient image mapped through the colormap
         n_pixels = 256
         gradient_values = np.linspace(
             float(x[0]), float(x[-1]), n_pixels
@@ -1616,7 +1589,6 @@ class HistogramWidget(QWidget):
             interpolation="bilinear",
         )
 
-        # Build a closed polygon: upper curve forward, lower curve backward
         verts_x = np.concatenate([x, x[::-1]])
         verts_y = np.concatenate([y_upper, y_lower[::-1]])
         verts = np.column_stack([verts_x, verts_y])
@@ -1625,7 +1597,6 @@ class HistogramWidget(QWidget):
         )
         im.set_clip_path(clip_poly)
 
-        # Set axes limits so the curve is visible
         self.ax.set_xlim(float(x[0]), float(x[-1]))
         self.ax.set_ylim(0, y_max * 1.05)
 
@@ -1662,7 +1633,6 @@ class HistogramWidget(QWidget):
         n = len(self._counts_per_dataset)
 
         if self._show_sd and n > 1:
-            # Multiple layers with SD: show mean line + SD shaded area
             all_counts = np.array(
                 list(self._counts_per_dataset.values()), dtype=float
             )
@@ -1675,16 +1645,13 @@ class HistogramWidget(QWidget):
             _, lower_fine = self._smooth_curve(lower)
             _, upper_fine = self._smooth_curve(upper)
 
-            # Gradient-filled SD band
             self._fill_gradient(
                 x_fine, upper_fine, lower_fine, cmap, norm, alpha=0.35
             )
-            # Gradient-colored mean line
             self._draw_gradient_line(
                 x_fine, mean_fine, cmap, norm, linewidth=2
             )
         elif self._show_sd and n == 1:
-            # Single layer with SD: show only the gradient line
             counts = list(self._counts_per_dataset.values())[0]
             x_fine, y_fine = self._smooth_curve(counts)
             self._draw_gradient_line(
@@ -1693,7 +1660,6 @@ class HistogramWidget(QWidget):
             self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
             self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
         else:
-            # No SD (single or multiple layers): filled area under curve
             if n > 1:
                 all_counts = np.array(
                     list(self._counts_per_dataset.values()), dtype=float
@@ -1704,7 +1670,6 @@ class HistogramWidget(QWidget):
 
             x_fine, mean_fine = self._smooth_curve(mean_counts)
 
-            # Seamless gradient fill under the curve
             self._fill_gradient(
                 x_fine,
                 mean_fine,
@@ -1713,7 +1678,6 @@ class HistogramWidget(QWidget):
                 norm,
                 alpha=0.8,
             )
-            # Gradient-colored outline on top
             self._draw_gradient_line(
                 x_fine, mean_fine, cmap, norm, linewidth=2
             )
@@ -1856,16 +1820,84 @@ class StatisticsTableWidget(QTableWidget):
         self.horizontalHeader().setStretchLastSection(True)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.setSelectionMode(QTableWidget.NoSelection)
+        self.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.setSelectionBehavior(QTableWidget.SelectItems)
         self.verticalHeader().setVisible(False)
         self.setMaximumHeight(200)
-        # Style to match the dark theme
         self.setStyleSheet(
             "QTableWidget { background: transparent; color: grey; "
             "gridline-color: #555; }"
             "QHeaderView::section { background: transparent; color: grey; "
             "border: 1px solid #555; font-size: 10px; }"
+            "QTableWidget::item:selected { background: #4a6fa5; color: white; }"
         )
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def keyPressEvent(self, event):
+        """Handle Ctrl+C / Ctrl+A keyboard shortcuts."""
+        if event.modifiers() == Qt.ControlModifier:
+            if event.key() == Qt.Key_C:
+                self._copy_selection()
+                return
+            if event.key() == Qt.Key_A:
+                self.selectAll()
+                return
+        super().keyPressEvent(event)
+
+    def _copy_selection(self, include_headers=False):
+        """Copy selected cells (or entire table if nothing selected) to clipboard."""
+        selected = self.selectedItems()
+        if not selected:
+            rows = range(self.rowCount())
+            cols = range(self.columnCount())
+            sel_indices = {(r, c) for r in rows for c in cols}
+        else:
+            sel_indices = {(item.row(), item.column()) for item in selected}
+
+        if not sel_indices:
+            return
+
+        min_row = min(r for r, c in sel_indices)
+        max_row = max(r for r, c in sel_indices)
+        min_col = min(c for r, c in sel_indices)
+        max_col = max(c for r, c in sel_indices)
+
+        lines = []
+        if include_headers:
+            headers = [
+                self.horizontalHeaderItem(c).text()
+                for c in range(min_col, max_col + 1)
+            ]
+            lines.append("\t".join(headers))
+
+        for row in range(min_row, max_row + 1):
+            row_data = []
+            for col in range(min_col, max_col + 1):
+                if (row, col) in sel_indices:
+                    item = self.item(row, col)
+                    row_data.append(item.text() if item else "")
+                else:
+                    row_data.append("")
+            lines.append("\t".join(row_data))
+
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _show_context_menu(self, pos):
+        """Show right-click context menu."""
+        menu = QMenu(self)
+        copy_action = menu.addAction("Copy")
+        copy_with_headers_action = menu.addAction("Copy with Headers")
+        menu.addSeparator()
+        select_all_action = menu.addAction("Select All")
+
+        action = menu.exec_(self.viewport().mapToGlobal(pos))
+        if action == copy_action:
+            self._copy_selection(include_headers=False)
+        elif action == copy_with_headers_action:
+            self._copy_selection(include_headers=True)
+        elif action == select_all_action:
+            self.selectAll()
 
     def update_statistics(self, datasets, bin_centers=None, bin_edges=None):
         """Update table rows from a ``{name: 1-D array}`` mapping.
@@ -1889,7 +1921,6 @@ class StatisticsTableWidget(QTableWidget):
                 median_val = float(np.median(valid))
                 std_val = float(np.std(valid))
 
-                # Center of mass
                 if bin_centers is not None and bin_edges is not None:
                     counts, _ = np.histogram(valid, bins=bin_edges)
                     total = counts.sum()
@@ -1899,7 +1930,7 @@ class StatisticsTableWidget(QTableWidget):
                         else float("nan")
                     )
                 else:
-                    com_val = mean_val  # fallback
+                    com_val = mean_val
             else:
                 mean_val = median_val = com_val = std_val = float("nan")
 

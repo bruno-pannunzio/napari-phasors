@@ -43,12 +43,12 @@ from qtpy.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionButton,
     QStyleOptionViewItem,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ._utils import CheckableComboBox, HistogramDockWidget, update_frequency_in_metadata
 from ._utils import CheckableComboBox, HistogramDockWidget, update_frequency_in_metadata
 from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
@@ -758,6 +758,20 @@ class PlotterWidget(QWidget):
         self.analysis_widget.setLayout(QVBoxLayout())
         self.analysis_widget.layout().addWidget(self.tab_widget)
 
+        # Create a shared histogram container using a QStackedWidget.
+        # Page 0 is an empty placeholder; pages 1-3 hold
+        # Lifetime / FRET / Components histogram dock widgets.
+        self._histogram_stack = QStackedWidget()
+        self._histogram_empty_page = QWidget()  # empty placeholder
+        self._histogram_stack.addWidget(self._histogram_empty_page)  # index 0
+        self._histogram_stack.setCurrentIndex(0)
+
+        # Wrapper so the dock widget gets a nice title
+        self.histogram_container = QWidget()
+        self.histogram_container.setLayout(QVBoxLayout())
+        self.histogram_container.layout().setContentsMargins(0, 0, 0, 0)
+        self.histogram_container.layout().addWidget(self._histogram_stack)
+
         # Add the analysis widget to the viewer with a delay to ensure correct ordering
         QTimer.singleShot(20, self._add_analysis_dock_widget)
 
@@ -896,44 +910,39 @@ class PlotterWidget(QWidget):
         self._set_selection_visibility(False)
 
     def _add_analysis_dock_widget(self):
-        """Add the analysis widget to the viewer as a dock widget."""
+        """Add the analysis widget and histogram container to the viewer.
+
+        The histogram container (QStackedWidget) is docked at the bottom.
+        The analysis tab widget is then split to its right so they sit
+        side-by-side, each taking roughly half the bottom width.
+        """
         if (
             hasattr(self.viewer, 'window')
             and self.viewer.window is not None
             and hasattr(self.viewer.window, '_qt_window')
         ):
-            self.viewer.window.add_dock_widget(
-                self.analysis_widget, name="Phasor Analysis", area="right"
+            qt_window = self.viewer.window._qt_window
+
+            # Dock the histogram container first (it will be on the left)
+            self._histogram_dock = self.viewer.window.add_dock_widget(
+                self.histogram_container,
+                name="Histogram",
+                area="bottom",
             )
 
-            # Add detachable histogram dock widgets
-            if hasattr(self, 'lifetime_histogram_dock_widget'):
-                self._lifetime_hist_dock = (
-                    self.viewer.window.add_dock_widget(
-                        self.lifetime_histogram_dock_widget,
-                        name="Lifetime Histogram",
-                        area="right",
-                    )
-                )
-                self._lifetime_hist_dock.setVisible(False)
+            # Dock the analysis tab widget to the bottom as well
+            self._analysis_dock = self.viewer.window.add_dock_widget(
+                self.analysis_widget,
+                name="Phasor Analysis",
+                area="bottom",
+            )
 
-            if hasattr(self, 'fret_histogram_dock_widget'):
-                self._fret_hist_dock = self.viewer.window.add_dock_widget(
-                    self.fret_histogram_dock_widget,
-                    name="FRET Histogram",
-                    area="right",
-                )
-                self._fret_hist_dock.setVisible(False)
-
-            if hasattr(self, 'components_histogram_dock_widget'):
-                self._components_hist_dock = (
-                    self.viewer.window.add_dock_widget(
-                        self.components_histogram_dock_widget,
-                        name="Components Histogram",
-                        area="right",
-                    )
-                )
-                self._components_hist_dock.setVisible(False)
+            # Split them side-by-side: histogram (left) | analysis (right)
+            qt_window.splitDockWidget(
+                self._histogram_dock,
+                self._analysis_dock,
+                Qt.Horizontal,
+            )
 
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
@@ -1471,13 +1480,7 @@ class PlotterWidget(QWidget):
 
         self._show_tab_artists(current_tab)
 
-
-
-        # Show/hide detachable histogram dock widgets
-        self._update_histogram_dock_visibility(current_tab)
-
-
-        # Show/hide detachable histogram dock widgets
+        # Show/hide histogram dock widgets based on active tab
         self._update_histogram_dock_visibility(current_tab)
 
         # Update filter histogram if switching to filter tab and it needs updating
@@ -1557,17 +1560,21 @@ class PlotterWidget(QWidget):
             self.fret_tab.set_artists_visible(visible)
 
     def _update_histogram_dock_visibility(self, current_tab):
-        """Show the histogram dock for the active tab, hide others."""
-        is_lifetime = current_tab == getattr(self, 'lifetime_tab', None)
-        is_fret = current_tab == getattr(self, 'fret_tab', None)
-        is_components = current_tab == getattr(self, 'components_tab', None)
+        """Switch the shared histogram stack to show the active tab's histogram.
 
-        if hasattr(self, '_lifetime_hist_dock'):
-            self._lifetime_hist_dock.setVisible(is_lifetime)
-        if hasattr(self, '_fret_hist_dock'):
-            self._fret_hist_dock.setVisible(is_fret)
-        if hasattr(self, '_components_hist_dock'):
-            self._components_hist_dock.setVisible(is_components)
+        For tabs without a histogram (Plot Settings, Calibration, Filter,
+        Selection) the empty placeholder page is shown so the dock stays
+        visible but blank.
+        """
+        if current_tab == getattr(self, 'lifetime_tab', None):
+            idx = getattr(self, '_lifetime_hist_page_idx', 0)
+        elif current_tab == getattr(self, 'fret_tab', None):
+            idx = getattr(self, '_fret_hist_page_idx', 0)
+        elif current_tab == getattr(self, 'components_tab', None):
+            idx = getattr(self, '_components_hist_page_idx', 0)
+        else:
+            idx = 0  # empty placeholder
+        self._histogram_stack.setCurrentIndex(idx)
 
     def _on_semi_circle_changed(self, state):
         """Callback for semi circle checkbox change."""
@@ -1701,7 +1708,7 @@ class PlotterWidget(QWidget):
         self.components_tab = ComponentsWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.components_tab, "Components")
 
-        # Wrap the histogram in a detachable dock widget
+        # Wrap the histogram in a HistogramDockWidget and add to shared stack
         self.components_histogram_dock_widget = HistogramDockWidget(
             self.components_tab.histogram_widget,
             title="Components Histogram & Statistics",
@@ -1718,15 +1725,22 @@ class PlotterWidget(QWidget):
         )
         dock_layout.insertWidget(0, component_selector)
 
+        self._components_hist_page_idx = self._histogram_stack.addWidget(
+            self.components_histogram_dock_widget
+        )
+
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
         self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
 
-        # Wrap the histogram in a detachable dock widget
+        # Wrap the histogram in a HistogramDockWidget and add to shared stack
         self.lifetime_histogram_dock_widget = HistogramDockWidget(
             self.lifetime_tab.histogram_widget,
             title="Lifetime Histogram & Statistics",
+        )
+        self._lifetime_hist_page_idx = self._histogram_stack.addWidget(
+            self.lifetime_histogram_dock_widget
         )
 
         self.harmonic_spinbox.valueChanged.connect(
@@ -1743,10 +1757,13 @@ class PlotterWidget(QWidget):
         self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
 
-        # Wrap the histogram in a detachable dock widget
+        # Wrap the histogram in a HistogramDockWidget and add to shared stack
         self.fret_histogram_dock_widget = HistogramDockWidget(
             self.fret_tab.histogram_widget,
             title="FRET Histogram & Statistics",
+        )
+        self._fret_hist_page_idx = self._histogram_stack.addWidget(
+            self.fret_histogram_dock_widget
         )
 
         self.fret_tab.frequency_input.editingFinished.connect(
