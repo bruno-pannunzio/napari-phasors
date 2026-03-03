@@ -46,6 +46,7 @@ from qtpy.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QStackedWidget,
 )
 
 from ._utils import CheckableComboBox, HistogramDockWidget, update_frequency_in_metadata
@@ -761,7 +762,17 @@ class PlotterWidget(QWidget):
         # Page 0 is an empty placeholder; pages 1-3 hold
         # Lifetime / FRET / Components histogram dock widgets.
         self._histogram_stack = QStackedWidget()
-        self._histogram_empty_page = QWidget()  # empty placeholder
+        # Empty placeholder page with informative message
+        self._histogram_empty_page = QWidget()
+        _empty_layout = QVBoxLayout(self._histogram_empty_page)
+        _empty_label = QLabel(
+            "Select a Lifetime, FRET, or Components tab\nto view histogram data."
+        )
+        _empty_label.setAlignment(Qt.AlignCenter)
+        _empty_label.setStyleSheet("color: gray; font-style: italic;")
+        _empty_layout.addStretch()
+        _empty_layout.addWidget(_empty_label)
+        _empty_layout.addStretch()
         self._histogram_stack.addWidget(self._histogram_empty_page)  # index 0
         self._histogram_stack.setCurrentIndex(0)
 
@@ -769,13 +780,22 @@ class PlotterWidget(QWidget):
         self.histogram_container = QWidget()
         self.histogram_container.setLayout(QVBoxLayout())
         self.histogram_container.layout().setContentsMargins(0, 0, 0, 0)
+        # Dynamic title label that updates based on the active tab
+        self._histogram_title_label = QLabel("Histogram")
+        self._histogram_title_label.setStyleSheet(
+            "font-weight: bold; font-size: 13px; padding: 4px 0px;"
+        )
+        self._histogram_title_label.setAlignment(Qt.AlignCenter)
+        self.histogram_container.layout().addWidget(self._histogram_title_label)
         self.histogram_container.layout().addWidget(self._histogram_stack)
+        # Prevent the histogram from being shrunk below a usable size
+        self.histogram_container.setMinimumWidth(350)
 
         # Add the analysis widget to the viewer with a delay to ensure correct ordering
         QTimer.singleShot(20, self._add_analysis_dock_widget)
 
-        canvas_container.setMinimumHeight(300)
-        controls_container.setMinimumHeight(100)
+        canvas_container.setMinimumHeight(500)
+        controls_container.setMinimumHeight(200)
 
         # Add a flag to prevent recursive calls
         self._updating_plot = False
@@ -791,7 +811,7 @@ class PlotterWidget(QWidget):
 
         self._bins_timer = QTimer()
         self._bins_timer.setSingleShot(True)
-        self._bins_timer.setInterval(300)  # 300ms delay
+        self._bins_timer.setInterval(500)  # 300ms delay
         self._bins_timer.timeout.connect(self._process_bins_change)
 
         # Create Settings tab
@@ -940,6 +960,14 @@ class PlotterWidget(QWidget):
             qt_window.splitDockWidget(
                 self._histogram_dock,
                 self._analysis_dock,
+                Qt.Horizontal,
+            )
+
+            # Give the analysis tab more initial width than the histogram.
+            # resizeDocks expects lists of QDockWidget and desired pixel sizes.
+            qt_window.resizeDocks(
+                [self._histogram_dock, self._analysis_dock],
+                [350, 650],
                 Qt.Horizontal,
             )
 
@@ -1562,18 +1590,24 @@ class PlotterWidget(QWidget):
         """Switch the shared histogram stack to show the active tab's histogram.
 
         For tabs without a histogram (Plot Settings, Calibration, Filter,
-        Selection) the empty placeholder page is shown so the dock stays
-        visible but blank.
+        Selection) the empty placeholder page is shown with an informative
+        message.
         """
         if current_tab == getattr(self, 'lifetime_tab', None):
             idx = getattr(self, '_lifetime_hist_page_idx', 0)
+            title = "Lifetime Histogram & Statistics"
         elif current_tab == getattr(self, 'fret_tab', None):
             idx = getattr(self, '_fret_hist_page_idx', 0)
+            title = "FRET Histogram & Statistics"
         elif current_tab == getattr(self, 'components_tab', None):
             idx = getattr(self, '_components_hist_page_idx', 0)
+            title = "Components Histogram & Statistics"
         else:
             idx = 0  # empty placeholder
+            title = "Histogram"
         self._histogram_stack.setCurrentIndex(idx)
+        if hasattr(self, '_histogram_title_label'):
+            self._histogram_title_label.setText(title)
 
     def _on_semi_circle_changed(self, state):
         """Callback for semi circle checkbox change."""

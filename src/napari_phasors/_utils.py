@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -36,6 +37,7 @@ from qtpy.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
@@ -2172,6 +2174,127 @@ class StatisticsTableWidget(QTableWidget):
         self.update_statistics(pooled_datasets, bin_centers, bin_edges)
 
 
+class ResponsiveFormContainer(QWidget):
+    """Container that arranges form rows in 1 or 2 columns based on width.
+
+    Each *row* is a pair of ``(label_widget, field_widget)`` or a single
+    *full-span* widget.  When the container's width is below
+    ``width_threshold`` the rows are stacked vertically (single column).
+    When it is at or above the threshold the rows are arranged in a
+    two-column grid so that two label–field pairs sit side by side.
+
+    Usage::
+
+        form = ResponsiveFormContainer(width_threshold=450)
+        form.add_row(QLabel("Frequency:"), frequency_input)
+        form.add_row(QLabel("Type:"), type_combobox)
+        form.add_full_span_widget(calculate_button)
+
+    Parameters
+    ----------
+    width_threshold : int, optional
+        Width in pixels at which to switch from 1 to 2 columns.
+        Default is 450.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    def __init__(self, width_threshold: int = 450, parent: QWidget = None):
+        super().__init__(parent)
+        self._width_threshold = width_threshold
+        self._rows = []  # list of (label_widget | None, field_widget)
+        self._current_columns = 1
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(4)
+
+    # -- public API ----------------------------------------------------------
+
+    @property
+    def width_threshold(self) -> int:
+        return self._width_threshold
+
+    @width_threshold.setter
+    def width_threshold(self, value: int):
+        self._width_threshold = value
+        self._relayout()
+
+    def add_row(self, label_widget: QWidget, field_widget: QWidget):
+        """Add a label + field pair."""
+        self._rows.append((label_widget, field_widget))
+        self._relayout()
+
+    def add_full_span_widget(self, widget: QWidget):
+        """Add a widget that always takes the full width."""
+        self._rows.append((None, widget))
+        self._relayout()
+
+    def add_layout_as_row(self, label_widget: QWidget, layout):
+        """Add a label + layout pair (wraps the layout in a QWidget)."""
+        wrapper = QWidget()
+        wrapper.setLayout(layout)
+        self.add_row(label_widget, wrapper)
+
+    def add_full_span_layout(self, layout):
+        """Add a layout that always takes the full width."""
+        wrapper = QWidget()
+        wrapper.setLayout(layout)
+        self.add_full_span_widget(wrapper)
+
+    # -- layout logic --------------------------------------------------------
+
+    def resizeEvent(self, event):
+        """Re-evaluate column count when width changes."""
+        super().resizeEvent(event)
+        new_cols = 2 if self.width() >= self._width_threshold else 1
+        if new_cols != self._current_columns:
+            self._current_columns = new_cols
+            self._relayout()
+
+    def _relayout(self):
+        """Remove all items from the grid and re-add with the current column mode."""
+        # Detach all widgets without deleting them
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+
+        cols = self._current_columns
+        # Each "logical column" is 2 grid columns: label col + field col
+        # So 1 column mode uses grid cols 0-1, 2 column mode uses 0-1 and 2-3
+        grid_row = 0
+        col_pair = 0  # 0 or 1 (which logical column we're filling)
+
+        for label_w, field_w in self._rows:
+            if label_w is None:
+                # Full-span widget: finish current row if partially filled
+                if col_pair != 0:
+                    grid_row += 1
+                    col_pair = 0
+                self._grid.addWidget(field_w, grid_row, 0, 1, cols * 2)
+                field_w.setParent(self)
+                field_w.show()
+                grid_row += 1
+            else:
+                base_col = col_pair * 2
+                label_w.setParent(self)
+                field_w.setParent(self)
+                self._grid.addWidget(label_w, grid_row, base_col)
+                self._grid.addWidget(field_w, grid_row, base_col + 1)
+                label_w.show()
+                field_w.show()
+                col_pair += 1
+                if col_pair >= cols:
+                    grid_row += 1
+                    col_pair = 0
+
+        # Make field columns stretch equally
+        for c in range(cols):
+            self._grid.setColumnStretch(c * 2, 0)      # label: no stretch
+            self._grid.setColumnStretch(c * 2 + 1, 1)  # field: stretch
+
+
 class HistogramDockWidget(QWidget):
     """Dockable container that wraps a :class:`HistogramWidget` with
     collapsible statistics tables underneath.
@@ -2201,6 +2324,7 @@ class HistogramDockWidget(QWidget):
         self.histogram_widget = histogram_widget
 
         self.setMinimumHeight(300)
+        self.setMinimumWidth(300)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
