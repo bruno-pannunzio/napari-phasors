@@ -54,6 +54,7 @@ from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
+from .phasor_color_tab import PhasorColorWidget
 from .selection_tab import SelectionWidget
 
 
@@ -801,6 +802,7 @@ class PlotterWidget(QWidget):
         self._create_components_tab()
         self._create_lifetime_tab()
         self._create_fret_tab()
+        self._create_phasor_color_tab()
 
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
@@ -1676,6 +1678,11 @@ class PlotterWidget(QWidget):
             self.fret_tab._on_harmonic_changed
         )
 
+    def _create_phasor_color_tab(self):
+        """Create the Phasor Color tab."""
+        self.phasor_color_tab = PhasorColorWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.phasor_color_tab, "Phasor Color")
+
     @property
     def harmonic(self):
         """Gets or sets the harmonic value from the harmonic spinbox.
@@ -2391,6 +2398,9 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'fret_tab'):
                 self.fret_tab._on_image_layer_changed()
 
+            if hasattr(self, 'phasor_color_tab'):
+                self.phasor_color_tab._on_image_layer_changed()
+
             self.plot()
 
             # Enforce tab-specific artist visibility based on current tab
@@ -2483,6 +2493,9 @@ class PlotterWidget(QWidget):
 
             if hasattr(self, 'fret_tab'):
                 self.fret_tab._on_image_layer_changed()
+
+            if hasattr(self, 'phasor_color_tab'):
+                self.phasor_color_tab._on_image_layer_changed()
 
             self.plot()
 
@@ -3106,6 +3119,13 @@ class PlotterWidget(QWidget):
             self._set_active_artist_and_plot(
                 self.plot_type, x_data, y_data, selection_id_data
             )
+
+            # Re-apply phasor color overlay if active
+            if (
+                hasattr(self, 'phasor_color_tab')
+                and selection_id_data is None
+            ):
+                self.phasor_color_tab.reapply_if_active()
         finally:
             self._updating_plot = False
 
